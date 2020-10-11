@@ -5,6 +5,7 @@ class Node:
     def __init__(self):
         self.children = []
         self.terminal = False
+        self.reduceable = False
 
     def initialize(self, value):
         pass
@@ -31,35 +32,19 @@ class Main(Node):
 class Statement(Node):
     def __init__(self):
         super().__init__()
+        self.reduceable = True
 
 class Expression(Node):
     def __init__(self):
         super().__init__()
-
-    def exec(self, symbol_table):
-        if len(self.children) == 1 and type(self.children[0]) is Number:
-            return self.children[0].exec(symbol_table)
-        elif len(self.children) == 1 and type(self.children[0]) is Var:
-            ident = self.children[0].exec(symbol_table)
-
-            if ident not in symbol_table:
-                print(f'ERROR: Undeclared identifier: "{ident}"')
-                exit()
-
-            return symbol_table[ident]
-        elif len(self.children) == 1 and type(self.children[0]) is OperatorExpression:
-            return self.children[0].exec(symbol_table)
-        elif len(self.children) == 1 and type(self.children[0]) is Expression:
-            return self.children[0].exec(symbol_table)
-
-        return None
+        self.reduceable = True
 
 class Assignment(Node):
     def __init__(self):
         super().__init__()
 
-    def exec_self(self, symbol_table):
-        ident = self.children[0].exec(symbol_table)
+    def exec(self, symbol_table):
+        ident = self.children[0].identifier
         val = self.children[1].exec(symbol_table)
 
         symbol_table[ident] = val
@@ -139,7 +124,7 @@ class Var(Node):
         self.identifier = value
 
     def exec_self(self, symbol_table):
-        return self.identifier
+        return symbol_table[self.identifier]
 
 class Number(Node):
     def __init__(self):
@@ -178,7 +163,8 @@ class Block(Node):
         # dont modify the original, thus when out of the block,
         # the variables defined inside the block are discarded
         new_table = symbol_table.copy()
-        self.children[0].exec(new_table)
+        for child in self.children:
+            child.exec(new_table)
 
         return None
 
@@ -367,6 +353,27 @@ def build_parse_tree(prod_rule_seq, final_tokens):
 
     return tree
 
+def replace(list_name, to_replace, replace_with):
+    idx = list_name.index(to_replace)
+
+    list_name = list_name[:idx] + replace_with + list_name[idx + 1:]
+    return list_name
+
+def reduce_parse_tree_to_ast(parse_tree_root, parent=None):
+    """reduce this node in the tree if it is reducable"""
+    ast = parse_tree_root
+
+    children = ast.children.copy()
+    for child in children:
+        reduce_parse_tree_to_ast(child, ast)
+
+    if ast.reduceable:
+        parent.children = replace(parent.children, ast, ast.children)
+        #for child in ast.children:
+         #   parent.add_child(child)
+
+    return ast
+
 def return_list_terminals(tree_root):
     lst = []
 
@@ -399,5 +406,6 @@ if __name__ == "__main__":
         print(f"ERROR: Invalid program!")
     else:
         parse_tree = build_parse_tree(seq, tokens)
+        ast_tree = reduce_parse_tree_to_ast(parse_tree)
         print(seq)
-        execute(parse_tree)
+        execute(ast_tree)
