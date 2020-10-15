@@ -198,7 +198,6 @@ for lst in temp:
 # lexical analysis built here works
 
 def tokenize(inp):
-    final_tokens = []
 
     while len(inp) > 0:
 
@@ -222,17 +221,14 @@ def tokenize(inp):
 
         if last_success_token != -1:
             if last_success_token in [0, 1, 5]:
-                final_tokens.append((last_success_token, inp[:last_success_idx + 1]))
+                yield (last_success_token, inp[:last_success_idx + 1])
             else:
-                final_tokens.append((last_success_token, ))
+                yield (last_success_token, )
 
-            print(f"{last_success_token}, {regexes[last_success_token]}")
             inp = inp[last_success_idx + 1:]
         else:
             print(f'ERROR: Invalid token "{inp}"')
             exit()
-
-    return final_tokens
 
 def get_production_seq_bfs(final_tokens):
     queue = [([-1], [])]
@@ -398,7 +394,7 @@ if __name__ == "__main__":
     else:
         inp = input()
 
-    tokens = tokenize(inp)
+    tokens = [token for token in tokenize(inp)]
     tokens_nums = [token[0] for token in tokens]
     seq = get_production_seq_dfs(tokens_nums)
 
