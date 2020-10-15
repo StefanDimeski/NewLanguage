@@ -111,8 +111,16 @@ class Block(Node):
 
         return None
 
+class Input(Node):
+    def __init__(self):
+        super().__init__()
+        pass
+
+    def exec(self, symbol_table):
+        return int(input())
+
 regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^=$", "^(\+|-)$", "^(\*|/)$", "^(==|!=)$",
-           "^\($", "^\)$", "^\{$", "^\}$", "^;$"]
+           "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
 
 class TType(Enum):
     IDENT = 0
@@ -128,6 +136,7 @@ class TType(Enum):
     OPEN_CURLY = 10
     CLOSED_CURLY = 11
     SEMICOLON = 12
+    TILDE = 13
 
 class Token():
     def __init__(self, type, val):
@@ -226,6 +235,8 @@ class Parser():
             return self.parse_if_statement()
         elif nxt.type == TType.PRINT:
             return self.parse_print_statement()
+        elif nxt.type == TType.TILDE:
+            return self.parse_input()
         else:
             return self.parse_assignment()
 
@@ -297,8 +308,15 @@ class Parser():
         elif nxt.type == TType.NUMBER:
             num = self.lex.eat(TType.NUMBER).val
             node = Number(num)
+        elif nxt.type == TType.TILDE:
+            node = self.parse_input()
 
         return node
+
+    def parse_input(self):
+        self.lex.eat(TType.TILDE)
+
+        return Input()
 
 
 def execute(tree_root):
@@ -320,5 +338,4 @@ if __name__ == "__main__":
     ast = parser.create_ast()
 
     symbol_table = {}
-
     ast.exec(symbol_table)
