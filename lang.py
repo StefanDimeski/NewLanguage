@@ -2,6 +2,65 @@ import re
 import sys
 from enum import Enum
 
+
+class MemoryManager():
+    def __init__(self):
+        # Both of these dictionaries are indexed by symbol
+        self.register_table = {}
+        self.stack_table = {}  # offset from $fp
+        self.registers = [f"$t{i}" for i in range(0, 8)]
+        self.register_occupied = [False for i in range(0, 8)]
+        self.free_offset = 0
+
+        print("move $fp, $sp")
+
+    def load_symbol_in_register(self, symbol_ident, register):
+        if symbol_ident in self.register_table:
+            return self.register_table[symbol_ident]
+
+        if symbol_ident in self.stack_table:
+            print(f"lw {register}, {self.stack_table[symbol_ident]}($fp)")
+            return register
+
+        self.occupy_reg(register)
+
+        return None
+
+    def load_symbol_in_free_register(self, symbol_ident):
+        free_reg = self.get_free_register()
+
+        return self.load_symbol_in_register(symbol_ident, free_reg)
+
+    def stack_up(self):
+        print(f"addi $sp, $sp, -4")
+
+    def store_ident_in_memory(self, id):
+        self.stack_up()
+
+        reg = self.register_table[id]
+
+        print(f"sw {reg}, {self.free_offset}($fp)")
+        self.stack_table[id] = self.free_offset
+
+        self.free_offset -= 4
+
+    def get_free_register(self, occupy=True):
+        for idx, r in enumerate(self.register_occupied):
+            if not r:
+                if occupy:
+                    self.occupy_reg(self.registers[idx])
+                return self.registers[idx]
+
+        # At this point no register was free so we need to evict one TODO
+
+    def occupy_reg(self, reg):
+        idx = self.registers.index(reg)
+        self.register_occupied[idx] = True
+
+    def free_register(self, reg):
+        idx = self.registers.index(reg)
+        self.register_occupied[idx] = False
+
 class Node:
     def __init__(self):
         pass
