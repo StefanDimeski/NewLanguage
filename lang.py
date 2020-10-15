@@ -10,8 +10,24 @@ class MemoryManager():
         self.registers = [f"$t{i}" for i in range(0, 8)]
         self.register_occupied = [False for i in range(0, 8)]
         self.free_offset = 0
+        self.label_generator = self.label_generator()
 
         print("move $fp, $sp")
+
+    def label_generator(self):
+        num = 0
+        while True:
+            num_str = str(num)
+            label = ""
+
+            for digit in num_str:
+                label += chr(97 + int(digit))
+
+            num += 1
+            yield label
+
+    def new_label(self):
+        return next(self.label_generator)
 
     def load_symbol_in_register(self, symbol_ident, register):
         if symbol_ident in self.register_table:
@@ -81,6 +97,17 @@ class Assignment(Node):
 
         return None
 
+    def compile(self, mem):
+        ident = self.var.identifier
+        reg = self.expr.compile(mem)
+        mem.register_table[ident] = reg
+        if ident in mem.stack_table:
+            print(f"sw {reg}, {mem.stack_table[ident]}($fp)")
+        else:
+            mem.store_ident_in_memory(ident)
+
+        return None
+
 class If_Statement(Node):
     def __init__(self, cond, block):
         super().__init__()
@@ -96,6 +123,17 @@ class If_Statement(Node):
             self.block.exec(symbol_table)
 
         return None
+
+    def compile(self, mem):
+        result_reg = self.condition.compile(mem)
+
+        label = mem.new_label()
+        print(f"beqz {result_reg}, {label}")
+
+        mem.free_register(result_reg)
+
+        self.block.compile(mem)
+        print(f"{label}:")
 
 class Operator(Node):
     def __init__(self, left, op, right):
@@ -121,6 +159,33 @@ class Operator(Node):
             print(f'ERROR: Invalid operator type: "{self.op}"')
             return False
 
+    def compile(self, mem):
+        free_reg = mem.get_free_register()
+
+        left = self.left.compile(mem)
+        right = self.right.compile(mem)
+        type = self.op
+
+        if type == "+":
+            print(f"add {free_reg}, {left}, {right}")
+        elif type == '-':
+            print(f"sub {free_reg}, {left}, {right}")
+        elif type == '*':
+            print(f"mul {free_reg}, {left}, {right}")
+        elif type == '/':
+            print(f"div {free_reg}, {left}, {right}")
+        elif type == '==':
+            print(f"seq {free_reg}, {left}, {right}")
+        elif type == '!=':
+            print(f"sne {free_reg}, {left}, {right}")
+        else:
+            print(f"ERROR: Invalid operator {type}")
+
+        mem.free_register(left)
+        mem.free_register(right)
+
+        return free_reg
+
 class Var(Node):
     def __init__(self, ident):
         super().__init__()
@@ -129,6 +194,9 @@ class Var(Node):
     def exec(self, symbol_table):
         return symbol_table[self.identifier]
 
+    def compile(self, mem):
+        return mem.load_symbol_in_free_register(self.identifier)
+
 class Number(Node):
     def __init__(self, num):
         super().__init__()
@@ -136,6 +204,11 @@ class Number(Node):
 
     def exec(self, symbol_table):
         return self.num
+
+    def compile(self, mem):
+        reg = mem.get_free_register()
+        print(f"li {reg}, {self.num}")
+        return reg
 
 class Print(Node):
     def __init__(self, expr):
@@ -153,6 +226,28 @@ class Print(Node):
 
         return None
 
+    def compile(self, mem):
+        reg = self.expr.compile(mem)
+
+        print(f"li $v0, 1")
+        print(f"move $a0, {reg}")
+        print("syscall")
+
+class Program(Node):
+    def __init__(self, block):
+        super().__init__()
+        self.block = block
+
+    def exec(self, symbol_table):
+        self.block.exec(symbol_table)
+
+    def compile(self, mem):
+        self.block.compile(mem)
+
+        # end program
+        print("li $v0, 10")
+        print("syscall")
+
 class Block(Node):
     def __init__(self, children):
         super().__init__()
@@ -169,6 +264,10 @@ class Block(Node):
 
         return None
 
+    def compile(self, mem):
+        for child in self.children:
+            child.compile(mem)
+
 class Input(Node):
     def __init__(self):
         super().__init__()
@@ -176,6 +275,16 @@ class Input(Node):
 
     def exec(self, symbol_table):
         return int(input())
+
+    def compile(self, mem):
+        print("li $v0, 5")
+        print("syscall")
+
+        free_reg = mem.get_free_register()
+
+        print(f"move {free_reg}, $v0")
+
+        return free_reg
 
 regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^=$", "^(\+|-)$", "^(\*|/)$", "^(==|!=)$",
            "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
@@ -268,7 +377,10 @@ class Parser():
         self.lex = lexer
 
     def create_ast(self):
-        return self.parse_block()
+        return self.parse_program()
+
+    def parse_program(self):
+        return Program(self.parse_block())
 
     def parse_block(self):
         self.lex.eat(TType.OPEN_CURLY)
@@ -396,4 +508,7 @@ if __name__ == "__main__":
     ast = parser.create_ast()
 
     symbol_table = {}
-    ast.exec(symbol_table)
+    mem = MemoryManager()
+
+    #ast.exec(symbol_table)
+    ast.compile(mem)
