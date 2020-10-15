@@ -2,7 +2,6 @@ import re
 import sys
 from enum import Enum
 
-
 class MemoryManager():
     def __init__(self):
         # Both of these dictionaries are indexed by symbol
