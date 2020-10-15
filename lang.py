@@ -1,6 +1,65 @@
 import re
 import sys
 
+class MemoryManager():
+    def __init__(self):
+        # Both of these dictionaries are indexed by symbol
+        self.register_table = {}
+        self.stack_table = {} # offset from $fp
+        self.registers = [f"$t{i}" for i in range(0, 8)]
+        self.register_occupied = [False for i in range(0, 8)]
+        self.free_offset = 0
+
+        print("move $fp, $sp")
+
+    def load_symbol_in_register(self, symbol_ident, register):
+        if symbol_ident in self.register_table:
+            return self.register_table[symbol_ident]
+
+        if symbol_ident in self.stack_table:
+            print(f"lw {register}, {self.stack_table[symbol_ident]}($fp)")
+            return register
+
+        self.occupy_reg(register)
+
+        return None
+
+
+    def load_symbol_in_free_register(self, symbol_ident):
+        free_reg = self.get_free_register()
+
+        return self.load_symbol_in_register(symbol_ident, free_reg)
+
+    def stack_up(self):
+        print(f"addi $sp, $sp, -4")
+
+    def store_ident_in_memory(self, id):
+        self.stack_up()
+
+        reg = self.register_table[id]
+
+        print(f"sw {reg}, {self.free_offset}($fp)")
+        self.stack_table[id] = self.free_offset
+
+        self.free_offset -= 4
+
+    def get_free_register(self, occupy=True):
+        for idx, r in enumerate(self.register_occupied):
+            if not r:
+                if occupy:
+                    self.occupy_reg(self.registers[idx])
+                return self.registers[idx]
+
+        # At this point no register was free so we need to evict one TODO
+        
+    def occupy_reg(self, reg):
+        idx = self.registers.index(reg)
+        self.register_occupied[idx] = True
+        
+    def free_register(self, reg):
+        idx = self.registers.index(reg)
+        self.register_occupied[idx] = False
+
 class Node:
     def __init__(self):
         self.children = []
@@ -25,9 +84,15 @@ class Node:
 
         return self.exec_self(symbol_table)
 
+    def compile(self, mem):
+        pass
+
 class Main(Node):
     def __init__(self):
         super().__init__()
+
+    def compile(self, mem):
+        self.children[0].compile(mem)
 
 class Statement(Node):
     def __init__(self):
@@ -48,6 +113,17 @@ class Assignment(Node):
         val = self.children[1].exec(symbol_table)
 
         symbol_table[ident] = val
+
+        return None
+
+    def compile(self, mem):
+        ident = self.children[0].identifier
+        reg = self.children[1].compile(mem)
+        mem.register_table[ident] = reg
+        if ident in mem.stack_table:
+            print(f"sw {reg}, {mem.stack_table[ident]}($fp)")
+        else:
+            mem.store_ident_in_memory(ident)
 
         return None
 
@@ -90,6 +166,26 @@ class OperatorExpression(Node):
             print(f'ERROR: Invalid operator type: "{type}"')
             return False
 
+    def compile(self, mem):
+        results = []
+        for node in self.children:
+            results.append(node.compile(mem))
+
+        type = results[1]
+
+        free_reg = mem.get_free_register()
+        if type == "+":
+            print(f"add {free_reg}, {results[0]}, {results[2]}")
+        elif type == '-':
+            print(f"sub {free_reg}, {results[0]}, {results[2]}")
+        elif type == '*':
+            print(f"mul {free_reg}, {results[0]}, {results[2]}")
+        elif type == '/':
+            print(f"div {free_reg}, {results[0]}, {results[2]}")
+
+        return free_reg
+
+
 class Operator(Node):
     def __init__(self):
         super().__init__()
@@ -100,6 +196,9 @@ class Operator(Node):
         self.type = value
 
     def exec(self, symbol_table):
+        return self.type
+
+    def compile(self, mem):
         return self.type
 
 class Value(Node):
@@ -114,6 +213,10 @@ class Value(Node):
     def exec_self(self, symbol_table):
         return self.value
 
+    def compile(self, mem):
+        print("Compile method of Value")
+        pass
+
 class Var(Node):
     def __init__(self):
         super().__init__()
@@ -126,6 +229,9 @@ class Var(Node):
     def exec_self(self, symbol_table):
         return symbol_table[self.identifier]
 
+    def compile(self, mem):
+        return mem.load_symbol_in_free_register(self.identifier)
+
 class Number(Node):
     def __init__(self):
         super().__init__()
@@ -137,6 +243,11 @@ class Number(Node):
 
     def exec_self(self, symbol_table):
         return self.num
+
+    def compile(self, mem):
+        reg = mem.get_free_register()
+        print(f"li {reg}, {self.num}")
+        return reg
 
 class Print(Node):
     def __init__(self):
@@ -153,6 +264,13 @@ class Print(Node):
 
         return None
 
+    def compile(self, mem):
+        reg = self.children[0].compile(mem)
+
+        print(f"li $v0, 1")
+        print(f"move $a0, {reg}")
+        print("syscall")
+
 class Block(Node):
     def __init__(self):
         super().__init__()
@@ -167,6 +285,10 @@ class Block(Node):
             child.exec(new_table)
 
         return None
+
+    def compile(self, mem):
+        for child in self.children:
+            child.compile(mem)
 
 
 
@@ -389,6 +511,10 @@ def execute(tree_root):
 
     tree_root.exec(symbol_table)
 
+def compile(tree_root):
+    mem = MemoryManager()
+    tree_root.compile(mem)
+
 if __name__ == "__main__":
 
     if len(sys.argv) > 1:
@@ -408,4 +534,5 @@ if __name__ == "__main__":
         parse_tree = build_parse_tree(seq, tokens)
         ast_tree = reduce_parse_tree_to_ast(parse_tree)
         print(seq)
-        execute(ast_tree)
+        #execute(ast_tree)
+        compile(ast_tree)
