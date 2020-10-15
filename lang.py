@@ -1,5 +1,6 @@
 import re
 import sys
+from enum import Enum
 
 class Node:
     def __init__(self):
@@ -168,186 +169,73 @@ class Block(Node):
 
         return None
 
-
-
-# 0 = var, 1 = number, 2 = if, 3 = print, 4 = equal, 5 = binary operator, 6 = open_brace, 7 = closed_brace, 8 = open_curly,
-# 9 = closed_curly, 10 = semicolon
-# -1 = main, -2 = statement, -3 = assignment, -4 = expression, -5 = print statement, -6 = operator expression, -7 = if statement
-# -8 = block
 regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^=$", "^(\+|-|\*|/|==|!=)$",
            "^\($", "^\)$", "^\{$", "^\}$", "^;$"]
 
-terminals = list(range(len(regexes))) #[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-
-production_rules = {-1:[[-8]], -2:[[-3], [-2, 10, -2], [-5], [-7]], -3:[[0, 4, -4]], -4:[[1], [0], [-6], [6, -4, 7]],
-                    -5:[[3, 6, -4, 7]], -6:[[-4, 5, -4]], -7:[[2, -4, 10, -8]], -8:[[8, -2, 9]]}
-
-terminals_late_init = [0, 1, 5]
-
-
-temp = [list(val) for val in production_rules.values()]
-production_rules_nums = []
-for lst in temp:
-    production_rules_nums.extend(lst)
-
-# {a=2;b=4;c=5;print(c);print(a);print(b)} this input crumbles bfs parsing
+class Token(Enum):
+    IDENT = 0
+    NUMBER = 1
+    IF = 2
+    PRINT = 3
+    EQUAL = 4
+    BIN_OP = 5
+    OPEN_BRACE = 6
+    CLOSED_BRACE = 7
+    OPEN_CURLY = 8
+    CLOSED_CURLY = 9
+    SEMICOLON = 10
 
 # check out if300 - this is an identifier in C, so it's okay
 # but if+ is def not an identifier and it actually is caught only after
 # compiling so lexically it's okay, which is what i expected and how this
 # lexical analysis built here works
 
-def tokenize(inp):
+class Lexer():
+    def __init__(self, text):
+        self.text = text
+        self.generator = self.gen_tokens()
 
-    while len(inp) > 0:
+    def eat(self, token_type):
+        nxt_type, val = next(self.generator)
 
-        while inp[0] == " ":
-            inp = inp[1:]
-
-        last_success_idx = -1
-        last_success_token = -1
-        for a in range(0, len(inp)):
-            substr = inp[:a + 1]
-            at_least_one = False
-            for index, regex in enumerate(regexes):
-                if re.search(regex, substr):
-                    # print(f"{index}, {regex}")
-                    at_least_one = True
-                    last_success_idx = a
-                    last_success_token = index
-
-            if not at_least_one and last_success_idx != -1:
-                break
-
-        if last_success_token != -1:
-            if last_success_token in [0, 1, 5]:
-                yield (last_success_token, inp[:last_success_idx + 1])
-            else:
-                yield (last_success_token, )
-
-            inp = inp[last_success_idx + 1:]
-        else:
-            print(f'ERROR: Invalid token "{inp}"')
+        if nxt_type != token_type:
+            print(f"ERROR: Invalid token {val}")
             exit()
 
-def get_production_seq_bfs(final_tokens):
-    queue = [([-1], [])]
-    while len(queue) > 0:
-        item, rules = queue.pop(0)
+        return (nxt_type, val)
 
-        if item == final_tokens:
-            return rules
+    def gen_tokens(self):
+        inp = self.text
+        while len(inp) > 0:
 
-        leftmost_nonterminal = -99
-        leftmost_nonterminal_idx = -1
-        for idx, a in enumerate(item):
-            if a not in terminals:
-                leftmost_nonterminal = a
-                leftmost_nonterminal_idx = idx
-                break
+            while inp[0] == " ":
+                inp = inp[1:]
 
-        if leftmost_nonterminal_idx == -1:
-            continue
+            last_success_idx = -1
+            last_success_token = -1
+            for a in range(0, len(inp)):
+                substr = inp[:a + 1]
+                at_least_one = False
+                for index, regex in enumerate(regexes):
+                    if re.search(regex, substr):
+                        # print(f"{index}, {regex}")
+                        at_least_one = True
+                        last_success_idx = a
+                        last_success_token = index
 
-        results = production_rules[leftmost_nonterminal]
+                if not at_least_one and last_success_idx != -1:
+                    break
 
-        for res in results:
-            left = item[:leftmost_nonterminal_idx]
-            right = item[leftmost_nonterminal_idx + 1 :]
+            if last_success_token != -1:
+                if last_success_token in [0, 1, 5]:
+                    yield (Token(last_success_token), inp[:last_success_idx + 1])
+                else:
+                    yield (Token(last_success_token), None)
 
-            to_append = left + res + right
-
-            if len(to_append) <= len(final_tokens):
-                ind = production_rules_nums.index(res)
-                queue.append((to_append, rules + [ind]))
-
-    return None
-
-# DFS is much faster than BFS
-def get_production_seq_dfs(final_tokens):
-    queue = [([-1], [])]
-    while len(queue) > 0:
-        item, rules = queue.pop()
-
-        if item == final_tokens:
-            return rules
-
-        leftmost_nonterminal = -99
-        leftmost_nonterminal_idx = -1
-        for idx, a in enumerate(item):
-            if a not in terminals:
-                leftmost_nonterminal = a
-                leftmost_nonterminal_idx = idx
-                break
-
-        if leftmost_nonterminal_idx == -1:
-            continue
-
-        results = production_rules[leftmost_nonterminal]
-
-        for res in results:
-            left = item[:leftmost_nonterminal_idx]
-            right = item[leftmost_nonterminal_idx + 1 :]
-
-            to_append = left + res + right
-
-            if len(to_append) <= len(final_tokens):
-                ind = production_rules_nums.index(res)
-                queue.append((to_append, rules + [ind]))
-
-    return None
-
-def find_leftmost_nonterminal(tree_root):
-    if not tree_root.terminal and len(tree_root.children) == 0:
-        return tree_root
-
-    for child in tree_root.children:
-        res = find_leftmost_nonterminal(child)
-        if res != None:
-            return res
-
-    return None
-
-
-def build_parse_tree(prod_rule_seq, final_tokens):
-    start = [-1]
-    tree = Main()
-    for rule in prod_rule_seq:
-        leftmost_nonterminal_node = find_leftmost_nonterminal(tree)
-
-        res = production_rules_nums[rule]
-
-        for token in res:
-            if token == -1:
-                leftmost_nonterminal_node.add_child(Main())
-            elif token == -2:
-                leftmost_nonterminal_node.add_child(Statement())
-            elif token == -3:
-                leftmost_nonterminal_node.add_child(Assignment())
-            elif token == -4:
-                leftmost_nonterminal_node.add_child(Expression())
-            elif token == 0:
-                leftmost_nonterminal_node.add_child(Var())
-            elif token == 1:
-                leftmost_nonterminal_node.add_child(Number())
-            elif token == -5:
-                leftmost_nonterminal_node.add_child(Print())
-            elif token == -6:
-                leftmost_nonterminal_node.add_child(OperatorExpression())
-            elif token == -7:
-                leftmost_nonterminal_node.add_child(If_Statement())
-            elif token == -8:
-                leftmost_nonterminal_node.add_child(Block())
-            elif token == 5:
-                leftmost_nonterminal_node.add_child(Operator())
-
-    list_terminals = return_list_terminals(tree)
-    late_init_tokens = [token for token in final_tokens if token[0] in terminals_late_init]
-
-    for node, token in zip(list_terminals, late_init_tokens):
-        node.initialize(token[1])
-
-    return tree
+                inp = inp[last_success_idx + 1:]
+            else:
+                print(f'ERROR: Invalid token "{inp}"')
+                exit()
 
 def replace(list_name, to_replace, replace_with):
     idx = list_name.index(to_replace)
@@ -370,16 +258,6 @@ def reduce_parse_tree_to_ast(parse_tree_root, parent=None):
 
     return ast
 
-def return_list_terminals(tree_root):
-    lst = []
-
-    if not tree_root.terminal:
-        for child in tree_root.children:
-            lst.extend(return_list_terminals(child))
-        return lst
-    else:
-        return [tree_root]
-
 def execute(tree_root):
     symbol_table = {}
 
@@ -394,14 +272,5 @@ if __name__ == "__main__":
     else:
         inp = input()
 
-    tokens = [token for token in tokenize(inp)]
-    tokens_nums = [token[0] for token in tokens]
-    seq = get_production_seq_dfs(tokens_nums)
-
-    if seq == None:
-        print(f"ERROR: Invalid program!")
-    else:
-        parse_tree = build_parse_tree(seq, tokens)
-        ast_tree = reduce_parse_tree_to_ast(parse_tree)
-        print(seq)
-        execute(ast_tree)
+    lexer = Lexer(inp)
+    print(lexer.eat(Token.IF))
