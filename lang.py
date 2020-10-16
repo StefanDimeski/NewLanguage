@@ -109,10 +109,11 @@ class Assignment(Node):
         return None
 
 class If_Statement(Node):
-    def __init__(self, cond, block):
+    def __init__(self, cond, block, else_block):
         super().__init__()
         self.condition = cond
         self.block = block
+        self.else_block = else_block
 
     def exec(self, symbol_table):
         condition = self.condition.exec(symbol_table)
@@ -121,19 +122,30 @@ class If_Statement(Node):
 
         if condition:
             self.block.exec(symbol_table)
+        else:
+            if self.else_block != None:
+                self.else_block.exec(symbol_table)
 
         return None
 
     def compile(self, mem):
         result_reg = self.condition.compile(mem)
 
-        label = mem.new_label()
-        print(f"beqz {result_reg}, {label}")
+        else_label = mem.new_label()
+        print(f"beqz {result_reg}, {else_label}")
 
         mem.free_register(result_reg)
 
         self.block.compile(mem)
-        print(f"{label}:")
+
+        if self.else_block == None:
+            print(f"{else_label}:")
+        else:
+            after_if_label = mem.new_label()
+            print(f"j {after_if_label}")
+            print(f"{else_label}:")
+            self.else_block.compile(mem)
+            print(f"{after_if_label}:")
 
 class Operator(Node):
     def __init__(self, left, op, right):
@@ -155,6 +167,8 @@ class Operator(Node):
             return int(self.left.exec(symbol_table)) * int(self.right.exec(symbol_table))
         elif self.op == '/':
             return int(self.left.exec(symbol_table)) / int(self.right.exec(symbol_table))
+        elif self.op == '%':
+            return int(self.left.exec(symbol_table)) % int(self.right.exec(symbol_table))
         else:
             print(f'ERROR: Invalid operator type: "{self.op}"')
             return False
@@ -174,6 +188,9 @@ class Operator(Node):
             print(f"mul {free_reg}, {left}, {right}")
         elif type == '/':
             print(f"div {free_reg}, {left}, {right}")
+        elif type == '%':
+            print(f"div {left}, {right}")
+            print(f"mfhi {free_reg}")
         elif type == '==':
             print(f"seq {free_reg}, {left}, {right}")
         elif type == '!=':
@@ -286,24 +303,79 @@ class Input(Node):
 
         return free_reg
 
-regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^=$", "^(\+|-)$", "^(\*|/)$", "^(==|!=)$",
+class For_Stat(Node):
+    def __init__(self, lower, upper, internal_block, var_name, up_down, first_bound, second_bound):
+        super().__init__()
+        self.lower = lower
+        self.upper = upper
+        self.internal_block = internal_block
+        self.var_name = var_name
+        self.up_down = up_down
+        self.first_bound = first_bound
+        self.second_bound = second_bound
+
+    def exec(self, symbol_table):
+        lower_val = self.lower.exec(symbol_table)
+        upper_val = self.upper.exec(symbol_table)
+
+        start_val = None
+        if self.up_down == "+":
+            start_val = lower_val if self.first_bound == "<=" else lower_val + 1
+        else:
+            start_val = upper_val if self.second_bound == "<=" else upper_val - 1
+
+        symbol_table[self.var_name] = start_val
+
+        first_check = lower_val < symbol_table[self.var_name] if self.first_bound == "<" else lower_val <= symbol_table[self.var_name]
+        second_check = symbol_table[self.var_name] < upper_val if self.second_bound == "<" else symbol_table[self.var_name] <= upper_val
+        while first_check and second_check:
+            self.internal_block.exec(symbol_table)
+
+            if self.up_down == "+":
+                symbol_table[self.var_name] += 1
+            else:
+                symbol_table[self.var_name] -= 1
+
+            first_check = lower_val < symbol_table[self.var_name] if self.first_bound == "<" else lower_val <= symbol_table[self.var_name]
+            second_check = symbol_table[self.var_name] < upper_val if self.second_bound == "<" else symbol_table[self.var_name] <= upper_val
+
+        del symbol_table[self.var_name]
+
+        return None
+
+    def compile(self, mem):
+
+        pass
+
+regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^=$", "^(\+|-)$", "^(\*|/)$", "^(==|!=)$", "^(<|>|<=|>=)$",
            "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
 
-class TType(Enum):
-    IDENT = 0
-    NUMBER = 1
-    IF = 2
-    PRINT = 3
-    EQUAL = 4
-    BIN_OP_PLUS_MIN = 5
-    BIN_OP_MULT_DIV = 6
-    BIN_OP_EQ_NOTEQ = 7
-    OPEN_BRACE = 8
-    CLOSED_BRACE = 9
-    OPEN_CURLY = 10
-    CLOSED_CURLY = 11
-    SEMICOLON = 12
-    TILDE = 13
+
+class AutoNumber(Enum):
+    def __new__(cls):
+        value = len(cls.__members__)  # note no + 1
+        obj = object.__new__(cls)
+        obj._value_ = value
+        return obj
+
+class TType(AutoNumber):
+    IDENT = ()
+    NUMBER = ()
+    IF = ()
+    PRINT = ()
+    ELSE = ()
+    FOR = ()
+    EQUAL = ()
+    BIN_OP_PLUS_MIN = ()
+    BIN_OP_MULT_DIV = ()
+    BIN_OP_EQ_NOTEQ = ()
+    BIN_OP_GREATER_SMALLER = ()
+    OPEN_BRACE = ()
+    CLOSED_BRACE = ()
+    OPEN_CURLY = ()
+    CLOSED_CURLY = ()
+    SEMICOLON = ()
+    TILDE = ()
 
 class Token():
     def __init__(self, type, val):
@@ -407,6 +479,8 @@ class Parser():
             return self.parse_print_statement()
         elif nxt.type == TType.TILDE:
             return self.parse_input()
+        elif nxt.type == TType.FOR:
+            return self.parse_for_statement()
         else:
             return self.parse_assignment()
 
@@ -420,7 +494,12 @@ class Parser():
 
         block = self.parse_block()
 
-        return If_Statement(cond, block)
+        else_block = None
+        if self.lex.peek().type == TType.ELSE:
+            self.lex.eat(TType.ELSE)
+            else_block = self.parse_block()
+
+        return If_Statement(cond, block, else_block)
 
     def parse_print_statement(self):
         self.lex.eat(TType.PRINT)
@@ -431,6 +510,29 @@ class Parser():
         self.lex.eat(TType.CLOSED_BRACE)
 
         return Print(expr)
+
+    def parse_for_statement(self):
+        self.lex.eat(TType.FOR)
+        lower = self.parse_expr1()
+
+        a = self.lex.eat(TType.BIN_OP_GREATER_SMALLER)
+        if a.val not in ["<", "<="]:
+            print(f"ERROR: Invalid syntax. Unexpected token {a.val}")
+            exit()
+
+        var_name = self.lex.eat(TType.IDENT)
+        up_down = self.lex.eat(TType.BIN_OP_PLUS_MIN)
+
+        b = self.lex.eat(TType.BIN_OP_GREATER_SMALLER)
+        if b.val not in ["<", "<="]:
+            print(f"ERROR: Invalid syntax. Unexpected token {b.val}")
+            exit()
+
+        upper = self.parse_expr1()
+
+        internal_block = self.parse_block()
+
+        return For_Stat(lower, upper, internal_block, var_name.val, up_down.val, a.val, b.val)
 
     def parse_assignment(self):
         ident = self.lex.eat(TType.IDENT).val
@@ -445,7 +547,6 @@ class Parser():
 
         while self.lex.peek().type == TType.BIN_OP_EQ_NOTEQ:
             op = self.lex.eat(TType.BIN_OP_EQ_NOTEQ).val
-
             node = Operator(node, op, self.parse_expr1())
 
         return node
@@ -455,7 +556,13 @@ class Parser():
 
         while self.lex.peek().type == TType.BIN_OP_PLUS_MIN:
             op = self.lex.eat(TType.BIN_OP_PLUS_MIN).val
-            node = Operator(node, op, self.parse_expr2())
+
+            next_expr = self.parse_expr2()
+
+            if isinstance(node, Number) and isinstance(next_expr, Number):
+                node = Number(node.num + next_expr.num) if op == "+" else Number(node.num - next_expr.num)
+            else:
+                node = Operator(node, op, next_expr)
 
         return node
 
@@ -464,7 +571,13 @@ class Parser():
 
         while self.lex.peek().type == TType.BIN_OP_MULT_DIV:
             op = self.lex.eat(TType.BIN_OP_MULT_DIV).val
-            node = Operator(node, op, self.parse_val())
+
+            next_expr = self.parse_val()
+
+            if isinstance(node, Number) and isinstance(next_expr, Number):
+                node = Number(node.num * next_expr.num) if op == "*" else Number(node.num / next_expr.num)
+            else:
+                node = Operator(node, op, next_expr)
 
         return node
 
