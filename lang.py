@@ -2,6 +2,36 @@ import re
 import sys
 from enum import Enum
 
+regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$",
+           "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
+
+
+class AutoNumber(Enum):
+    def __new__(cls):
+        value = len(cls.__members__)  # note no + 1
+        obj = object.__new__(cls)
+        obj._value_ = value
+        return obj
+
+class TType(AutoNumber):
+    IDENT = ()
+    NUMBER = ()
+    IF = ()
+    PRINT = ()
+    ELSE = ()
+    FOR = ()
+    EQUAL = ()
+    BIN_OP_PLUS_MIN = ()
+    BIN_OP_MULT_DIV = ()
+    BIN_OP_EQ_NOTEQ = ()
+    BIN_OP_GREATER_SMALLER = ()
+    OPEN_BRACE = ()
+    CLOSED_BRACE = ()
+    OPEN_CURLY = ()
+    CLOSED_CURLY = ()
+    SEMICOLON = ()
+    TILDE = ()
+
 class MemoryManager():
     def __init__(self):
         # Both of these dictionaries are indexed by symbol
@@ -42,9 +72,15 @@ class MemoryManager():
         return None
 
     def load_symbol_in_free_register(self, symbol_ident):
-        free_reg = self.get_free_register()
+        if symbol_ident in self.register_table:
+            return self.register_table[symbol_ident]
 
-        return self.load_symbol_in_register(symbol_ident, free_reg)
+        free_reg = self.get_free_register()
+        if symbol_ident in self.stack_table:
+            print(f"lw {free_reg}, {self.stack_table[symbol_ident]}($fp)")
+            return free_reg
+
+        return None
 
     def stack_up(self):
         print(f"addi $sp, $sp, -4")
@@ -59,6 +95,11 @@ class MemoryManager():
 
         self.free_offset -= 4
 
+    def store_reg_in_memory_as(self, reg, as_id):
+        self.register_table[as_id] = reg
+
+        self.store_ident_in_memory(as_id)
+
     def get_free_register(self, occupy=True):
         for idx, r in enumerate(self.register_occupied):
             if not r:
@@ -67,12 +108,20 @@ class MemoryManager():
                 return self.registers[idx]
 
         # At this point no register was free so we need to evict one TODO
+        print("ERROR: No more free registers")
 
     def occupy_reg(self, reg):
         idx = self.registers.index(reg)
         self.register_occupied[idx] = True
 
     def free_register(self, reg):
+        idx = self.registers.index(reg)
+        self.register_occupied[idx] = False
+
+    def free_register_if_not_id(self, reg):
+        if reg in list(self.register_table.values()):
+            return
+
         idx = self.registers.index(reg)
         self.register_occupied[idx] = False
 
@@ -169,6 +218,14 @@ class Operator(Node):
             return int(self.left.exec(symbol_table)) / int(self.right.exec(symbol_table))
         elif self.op == '%':
             return int(self.left.exec(symbol_table)) % int(self.right.exec(symbol_table))
+        elif self.op == '<':
+            return int(self.left.exec(symbol_table)) < int(self.right.exec(symbol_table))
+        elif self.op == '<=':
+            return int(self.left.exec(symbol_table)) <= int(self.right.exec(symbol_table))
+        elif self.op == '>':
+            return int(self.left.exec(symbol_table)) > int(self.right.exec(symbol_table))
+        elif self.op == '>=':
+            return int(self.left.exec(symbol_table)) >= int(self.right.exec(symbol_table))
         else:
             print(f'ERROR: Invalid operator type: "{self.op}"')
             return False
@@ -195,11 +252,19 @@ class Operator(Node):
             print(f"seq {free_reg}, {left}, {right}")
         elif type == '!=':
             print(f"sne {free_reg}, {left}, {right}")
+        elif self.op == '<':
+            print(f"slt {free_reg}, {left}, {right}")
+        elif self.op == '<=':
+            print(f"sle {free_reg}, {left}, {right}")
+        elif self.op == '>':
+            print(f"sgt {free_reg}, {left}, {right}")
+        elif self.op == '>=':
+            print(f"sge {free_reg}, {left}, {right}")
         else:
             print(f"ERROR: Invalid operator {type}")
 
-        mem.free_register(left)
-        mem.free_register(right)
+        mem.free_register_if_not_id(left)
+        mem.free_register_if_not_id(right)
 
         return free_reg
 
@@ -344,38 +409,59 @@ class For_Stat(Node):
         return None
 
     def compile(self, mem):
+        for_label = mem.new_label()
+        endfor_label = mem.new_label()
 
-        pass
+        command1 = "slt" if self.first_bound == "<" else "sle"
+        command2 = "slt" if self.second_bound == "<" else "sle"
 
-regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^=$", "^(\+|-)$", "^(\*|/)$", "^(==|!=)$", "^(<|>|<=|>=)$",
-           "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
+        lo = self.lower.compile(mem)
+        up = self.upper.compile(mem)
 
+        # mem.store_reg_in_memory_as(lo, "FOR.lo")
+        # mem.store_reg_in_memory_as(up, "FOR.up")
+        #
+        # mem.free_register(lo)
+        # mem.free_register(hi)
 
-class AutoNumber(Enum):
-    def __new__(cls):
-        value = len(cls.__members__)  # note no + 1
-        obj = object.__new__(cls)
-        obj._value_ = value
-        return obj
+        iter_var = mem.get_free_register()
+        if self.up_down == "+":
+            if self.first_bound == "<":
+                print(f"addi {iter_var}, {lo}, 1")
+            else:
+                print(f"move {iter_var}, {lo}")
+        else:
+            if self.second_bound == "<":
+                print(f"subi {iter_var}, {up}, 1")
+            else:
+                print(f"move {iter_var}, {up}")
+        #mem.store_reg_in_memory_as(iter_var, self.var_name)
+        mem.register_table[self.var_name] = iter_var
 
-class TType(AutoNumber):
-    IDENT = ()
-    NUMBER = ()
-    IF = ()
-    PRINT = ()
-    ELSE = ()
-    FOR = ()
-    EQUAL = ()
-    BIN_OP_PLUS_MIN = ()
-    BIN_OP_MULT_DIV = ()
-    BIN_OP_EQ_NOTEQ = ()
-    BIN_OP_GREATER_SMALLER = ()
-    OPEN_BRACE = ()
-    CLOSED_BRACE = ()
-    OPEN_CURLY = ()
-    CLOSED_CURLY = ()
-    SEMICOLON = ()
-    TILDE = ()
+        print(f"{for_label}:")
+
+        res = mem.get_free_register()
+        print(f"{command1} {res}, {lo}, {iter_var}")
+        print(f"beqz {res}, {endfor_label}")
+        print(f"{command2} {res}, {iter_var}, {up}")
+        print(f"beqz {res}, {endfor_label}")
+
+        self.internal_block.compile(mem)
+
+        # modify var
+        if self.up_down == "+":
+            print(f"addi {iter_var}, {iter_var}, 1")
+        else:
+            print(f"subi {iter_var}, {iter_var}, 1")
+
+        print(f"j {for_label}")
+
+        print(f"{endfor_label}:")
+
+        mem.free_register(lo)
+        mem.free_register(up)
+        mem.free_register(iter_var)
+        mem.free_register(res)
 
 class Token():
     def __init__(self, type, val):
@@ -393,7 +479,6 @@ class Lexer():
         self.next_token = None
 
     def eat(self, token_type):
-
         nxt = None
         if self.next_token != None:
             nxt = self.next_token
@@ -402,6 +487,20 @@ class Lexer():
             nxt = next(self.generator)
 
         if nxt.type != token_type:
+            print(f"ERROR: Invalid token {nxt.val}")
+            exit()
+
+        return nxt
+
+    def eat_list(self, list_of_types):
+        nxt = None
+        if self.next_token != None:
+            nxt = self.next_token
+            self.next_token = None
+        else:
+            nxt = next(self.generator)
+
+        if nxt.type not in list_of_types:
             print(f"ERROR: Invalid token {nxt.val}")
             exit()
 
@@ -545,8 +644,8 @@ class Parser():
     def parse_expr(self):
         node = self.parse_expr1()
 
-        while self.lex.peek().type == TType.BIN_OP_EQ_NOTEQ:
-            op = self.lex.eat(TType.BIN_OP_EQ_NOTEQ).val
+        while self.lex.peek().type in [TType.BIN_OP_EQ_NOTEQ, TType.BIN_OP_GREATER_SMALLER]:
+            op = self.lex.eat_list([TType.BIN_OP_EQ_NOTEQ, TType.BIN_OP_GREATER_SMALLER]).val
             node = Operator(node, op, self.parse_expr1())
 
         return node
@@ -575,7 +674,12 @@ class Parser():
             next_expr = self.parse_val()
 
             if isinstance(node, Number) and isinstance(next_expr, Number):
-                node = Number(node.num * next_expr.num) if op == "*" else Number(node.num / next_expr.num)
+                if op == "*":
+                    node = Number(node.num * next_expr.num)
+                elif op == "/":
+                    node = Number(node.num / next_expr.num)
+                elif op == "%":
+                    node = Number(node.num % next_expr.num)
             else:
                 node = Operator(node, op, next_expr)
 
