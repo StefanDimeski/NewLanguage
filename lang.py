@@ -689,6 +689,10 @@ class Parser():
         nxt = self.lex.peek()
 
         node = None
+        if nxt.type == TType.OPEN_BRACE:
+            self.lex.eat(TType.OPEN_BRACE)
+            node = self.parse_expr()
+            self.lex.eat(TType.CLOSED_BRACE)
         if nxt.type == TType.IDENT:
             ident_tok = self.lex.eat(TType.IDENT)
             node = Var(ident_tok.val)
@@ -727,5 +731,5 @@ if __name__ == "__main__":
     symbol_table = {}
     mem = MemoryManager()
 
-    #ast.exec(symbol_table)
-    ast.compile(mem)
+    ast.exec(symbol_table)
+    #ast.compile(mem)
