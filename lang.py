@@ -2,10 +2,7 @@ import re
 import sys
 from enum import Enum
 import random
-
-regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$",
-           "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
-
+import pyperclip
 
 class AutoNumber(Enum):
     def __new__(cls):
@@ -13,6 +10,17 @@ class AutoNumber(Enum):
         obj = object.__new__(cls)
         obj._value_ = value
         return obj
+
+full_str = ""
+def printc(str):
+    global full_str
+    full_str += (f"{str}\n")
+    print(str)
+
+
+
+regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$",
+           "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
 
 class TType(AutoNumber):
     IDENT = ()
@@ -96,7 +104,7 @@ class MemoryManager():
         self.vars[varname].reg = free_reg_idx
         self.register_varname[free_reg_idx] = varname
 
-        print(f"lw {self.reg_name(free_reg_idx)}, {self.vars[varname].stack}($fp)")
+        printc(f"lw {self.reg_name(free_reg_idx)}, {self.vars[varname].stack}($fp)")
 
         return free_reg_idx
 
@@ -125,10 +133,10 @@ class MemoryManager():
             reg_idx = self.vars[varname].reg
             self.vars[varname].stack = offset
 
-        print(f"sw {self.register_names[self.vars[varname].reg]}, {self.vars[varname].stack}($fp)")
+        printc(f"sw {self.register_names[self.vars[varname].reg]}, {self.vars[varname].stack}($fp)")
 
     def move_stack_up(self):
-        print(f"subi $sp, $sp, 4")
+        printc(f"subi $sp, $sp, 4")
         self.free_stack_offset -= 4
         return self.free_stack_offset
 
@@ -165,11 +173,54 @@ class MemoryManager():
             num += 1
             yield label
 
+
+class ActivationRecord():
+    def __init__(self, memorytree, parent):
+        self.memory = memorytree
+        self.parent = parent
+
+class MemoryTree():
+    def __init__(self, parent=None):
+        self.parent_memory = parent
+        self.mem = {}
+
+    def __getitem__(self, key):
+        if key not in self.mem:
+            if self.parent_memory is not None:
+                return self.parent_memory[key]
+            else:
+                print(f"ERROR: Uninitialized variable '{key}'")
+                exit()
+
+        return self.mem[key]
+
+    def __setitem__(self, key, value):
+        if key in self.mem:
+            self.mem[key] = value
+        else:
+            if self.parent_memory is not None:
+                if not self.parent_memory.set_var(key, value):
+                    self.mem[key] = value
+
+    def set_var(self, key, val):
+        """THIS FUNCTION ONLY TO BE USED INTERNALLY"""
+        if key in self.mem:
+            self.mem[key] = val
+            return True
+
+        if self.parent_memory is not None:
+            return self.parent_memory.set_var(key, val)
+
+        return False
+
+    def __delitem__(self, key):
+        del self.mem[key]
+
 class Node:
     def __init__(self):
         pass
 
-    def exec(self, symbol_table):
+    def exec(self, ar):
         pass
 
 class Assignment(Node):
@@ -178,11 +229,11 @@ class Assignment(Node):
         self.var = var
         self.expr = expr
 
-    def exec(self, symbol_table):
+    def exec(self, ar):
         ident = self.var.identifier
-        val = self.expr.exec(symbol_table)
+        val = self.expr.exec(ar)
 
-        symbol_table[ident] = val
+        ar.memory[ident] = val
 
         return None
 
@@ -190,7 +241,7 @@ class Assignment(Node):
         ident = self.var.identifier
         res_name = self.expr.compile(mem)
 
-        mem.change_varname(res_name, ident)
+        mem.change_varname(res_name, ident, True)
         return None
 
 class If_Statement(Node):
@@ -200,16 +251,16 @@ class If_Statement(Node):
         self.block = block
         self.else_block = else_block
 
-    def exec(self, symbol_table):
-        condition = self.condition.exec(symbol_table)
+    def exec(self, ar):
+        condition = self.condition.exec(ar)
         if not isinstance(condition, bool):
             return None
 
         if condition:
-            self.block.exec(symbol_table)
+            self.block.exec(ar)
         else:
             if self.else_block != None:
-                self.else_block.exec(symbol_table)
+                self.else_block.exec(ar)
 
         return None
 
@@ -218,7 +269,7 @@ class If_Statement(Node):
         result_reg = mem.reg_name(mem.get_var_in_any_reg(result_varname))
 
         else_label = mem.new_label()
-        print(f"beqz {result_reg}, {else_label}")
+        printc(f"beqz {result_reg}, {else_label}")
 
         if mem.is_var_temp(result_varname):
             mem.delete_var(result_varname)
@@ -226,13 +277,13 @@ class If_Statement(Node):
         self.block.compile(mem)
 
         if self.else_block == None:
-            print(f"{else_label}:")
+            printc(f"{else_label}:")
         else:
             after_if_label = mem.new_label()
-            print(f"j {after_if_label}")
-            print(f"{else_label}:")
+            printc(f"j {after_if_label}")
+            printc(f"{else_label}:")
             self.else_block.compile(mem)
-            print(f"{after_if_label}:")
+            printc(f"{after_if_label}:")
 
 class Operator(Node):
     def __init__(self, left, op, right):
@@ -241,29 +292,29 @@ class Operator(Node):
         self.right = right
         self.op = op
 
-    def exec(self, symbol_table):
+    def exec(self, ar):
         if self.op == '+':
-            return int(self.left.exec(symbol_table)) + int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) + int(self.right.exec(ar))
         elif self.op == '-':
-            return int(self.left.exec(symbol_table)) - int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) - int(self.right.exec(ar))
         elif self.op == '==':
-            return int(self.left.exec(symbol_table)) == int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) == int(self.right.exec(ar))
         elif self.op == '!=':
-            return int(self.left.exec(symbol_table)) != int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) != int(self.right.exec(ar))
         elif self.op == '*':
-            return int(self.left.exec(symbol_table)) * int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) * int(self.right.exec(ar))
         elif self.op == '/':
-            return int(self.left.exec(symbol_table)) / int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) / int(self.right.exec(ar))
         elif self.op == '%':
-            return int(self.left.exec(symbol_table)) % int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) % int(self.right.exec(ar))
         elif self.op == '<':
-            return int(self.left.exec(symbol_table)) < int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) < int(self.right.exec(ar))
         elif self.op == '<=':
-            return int(self.left.exec(symbol_table)) <= int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) <= int(self.right.exec(ar))
         elif self.op == '>':
-            return int(self.left.exec(symbol_table)) > int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) > int(self.right.exec(ar))
         elif self.op == '>=':
-            return int(self.left.exec(symbol_table)) >= int(self.right.exec(symbol_table))
+            return int(self.left.exec(ar)) >= int(self.right.exec(ar))
         else:
             print(f'ERROR: Invalid operator type: "{self.op}"')
             return False
@@ -280,28 +331,28 @@ class Operator(Node):
         right = mem.reg_name(mem.get_var_in_any_reg(right_varname))
 
         if type == "+":
-            print(f"add {free_reg}, {left}, {right}")
+            printc(f"add {free_reg}, {left}, {right}")
         elif type == '-':
-            print(f"sub {free_reg}, {left}, {right}")
+            printc(f"sub {free_reg}, {left}, {right}")
         elif type == '*':
-            print(f"mul {free_reg}, {left}, {right}")
+            printc(f"mul {free_reg}, {left}, {right}")
         elif type == '/':
-            print(f"div {free_reg}, {left}, {right}")
+            printc(f"div {free_reg}, {left}, {right}")
         elif type == '%':
-            print(f"div {left}, {right}")
-            print(f"mfhi {free_reg}")
+            printc(f"div {left}, {right}")
+            printc(f"mfhi {free_reg}")
         elif type == '==':
-            print(f"seq {free_reg}, {left}, {right}")
+            printc(f"seq {free_reg}, {left}, {right}")
         elif type == '!=':
-            print(f"sne {free_reg}, {left}, {right}")
+            printc(f"sne {free_reg}, {left}, {right}")
         elif self.op == '<':
-            print(f"slt {free_reg}, {left}, {right}")
+            printc(f"slt {free_reg}, {left}, {right}")
         elif self.op == '<=':
-            print(f"sle {free_reg}, {left}, {right}")
+            printc(f"sle {free_reg}, {left}, {right}")
         elif self.op == '>':
-            print(f"sgt {free_reg}, {left}, {right}")
+            printc(f"sgt {free_reg}, {left}, {right}")
         elif self.op == '>=':
-            print(f"sge {free_reg}, {left}, {right}")
+            printc(f"sge {free_reg}, {left}, {right}")
         else:
             print(f"ERROR: Invalid operator {type}")
 
@@ -318,8 +369,8 @@ class Variable(Node):
         super().__init__()
         self.identifier = ident
 
-    def exec(self, symbol_table):
-        return symbol_table[self.identifier]
+    def exec(self, ar):
+        return ar.memory[self.identifier]
 
     def compile(self, mem):
         #mem.get_var_in_any_reg(self.identifier) #TODO should it just return self.identifier?
@@ -331,13 +382,13 @@ class Number(Node):
         super().__init__()
         self.num = int(num)
 
-    def exec(self, symbol_table):
+    def exec(self, ar):
         return self.num
 
     def compile(self, mem):
         varname = mem.get_rand_varname()
         reg = mem.reg_name(mem.init_new_var(varname))
-        print(f"li {reg}, {self.num}")
+        printc(f"li {reg}, {self.num}")
         return varname
 
 class Print(Node):
@@ -345,8 +396,8 @@ class Print(Node):
         super().__init__()
         self.expr = expr
 
-    def exec(self, symbol_table):
-        res = self.expr.exec(symbol_table)
+    def exec(self, ar):
+        res = self.expr.exec(ar)
 
         print(res)
         #if isinstance(res, str):
@@ -360,38 +411,38 @@ class Print(Node):
         res_varname = self.expr.compile(mem)
         reg = mem.reg_name(mem.get_var_in_any_reg(res_varname))
 
-        print(f"li $v0, 1")
-        print(f"move $a0, {reg}")
-        print("syscall")
+        printc(f"li $v0, 1")
+        printc(f"move $a0, {reg}")
+        printc("syscall")
 
 class Program(Node):
     def __init__(self, block):
         super().__init__()
         self.block = block
 
-    def exec(self, symbol_table):
-        self.block.exec(symbol_table)
+    def exec(self, ar):
+        self.block.exec(ar)
 
     def compile(self, mem):
         self.block.compile(mem)
 
         # end program
-        print("li $v0, 10")
-        print("syscall")
+        printc("li $v0, 10")
+        printc("syscall")
 
 class Block(Node):
     def __init__(self, children):
         super().__init__()
         self.children = children
 
-    def exec(self, symbol_table):
-        # We create a new table such that we implement scoping
-        # By creating a new table, the statements inside the block
-        # dont modify the original, thus when out of the block,
-        # the variables defined inside the block are discarded
-        new_table = symbol_table.copy()
+    def exec(self, ar):
+        new_mem = MemoryTree(ar.memory)
+        ar.memory = new_mem
         for child in self.children:
-            child.exec(new_table)
+            child.exec(ar)
+
+        # Return it back (i.e. discard variables that were created in the scope of the block that just ended)
+        ar.memory = ar.memory.parent_memory
 
         return None
 
@@ -404,17 +455,17 @@ class Input(Node):
         super().__init__()
         pass
 
-    def exec(self, symbol_table):
+    def exec(self, ar):
         return int(input())
 
     def compile(self, mem):
-        print("li $v0, 5")
-        print("syscall")
+        printc("li $v0, 5")
+        printc("syscall")
 
         varname = mem.get_rand_varname()
         free_reg = mem.reg_name(mem.init_new_var(varname))
 
-        print(f"move {free_reg}, $v0")
+        printc(f"move {free_reg}, $v0")
 
         return varname
 
@@ -429,9 +480,9 @@ class For_Stat(Node):
         self.first_bound = first_bound
         self.second_bound = second_bound
 
-    def exec(self, symbol_table):
-        lower_val = self.lower.exec(symbol_table)
-        upper_val = self.upper.exec(symbol_table)
+    def exec(self, ar):
+        lower_val = self.lower.exec(ar)
+        upper_val = self.upper.exec(ar)
 
         start_val = None
         if self.up_down == "+":
@@ -439,22 +490,22 @@ class For_Stat(Node):
         else:
             start_val = upper_val if self.second_bound == "<=" else upper_val - 1
 
-        symbol_table[self.var_name] = start_val
+        ar.memory[self.var_name] = start_val
 
-        first_check = lower_val < symbol_table[self.var_name] if self.first_bound == "<" else lower_val <= symbol_table[self.var_name]
-        second_check = symbol_table[self.var_name] < upper_val if self.second_bound == "<" else symbol_table[self.var_name] <= upper_val
+        first_check = lower_val < ar.memory[self.var_name] if self.first_bound == "<" else lower_val <= ar.memory[self.var_name]
+        second_check = ar.memory[self.var_name] < upper_val if self.second_bound == "<" else ar.memory[self.var_name] <= upper_val
         while first_check and second_check:
-            self.internal_block.exec(symbol_table)
+            self.internal_block.exec(ar)
 
             if self.up_down == "+":
-                symbol_table[self.var_name] += 1
+                ar.memory[self.var_name] += 1
             else:
-                symbol_table[self.var_name] -= 1
+                ar.memory[self.var_name] -= 1
 
-            first_check = lower_val < symbol_table[self.var_name] if self.first_bound == "<" else lower_val <= symbol_table[self.var_name]
-            second_check = symbol_table[self.var_name] < upper_val if self.second_bound == "<" else symbol_table[self.var_name] <= upper_val
+            first_check = lower_val < ar.memory[self.var_name] if self.first_bound == "<" else lower_val <= ar.memory[self.var_name]
+            second_check = ar.memory[self.var_name] < upper_val if self.second_bound == "<" else ar.memory[self.var_name] <= upper_val
 
-        del symbol_table[self.var_name]
+        del ar.memory[self.var_name]
 
         return None
 
@@ -480,35 +531,35 @@ class For_Stat(Node):
         iter_var = mem.reg_name(mem.init_new_var(self.var_name))
         if self.up_down == "+":
             if self.first_bound == "<":
-                print(f"addi {iter_var}, {lo}, 1")
+                printc(f"addi {iter_var}, {lo}, 1")
             else:
-                print(f"move {iter_var}, {lo}")
+                printc(f"move {iter_var}, {lo}")
         else:
             if self.second_bound == "<":
-                print(f"subi {iter_var}, {up}, 1")
+                printc(f"subi {iter_var}, {up}, 1")
             else:
-                print(f"move {iter_var}, {up}")
+                printc(f"move {iter_var}, {up}")
 
-        print(f"{for_label}:")
+        printc(f"{for_label}:")
 
         res_varname = mem.get_rand_varname()
         res = mem.reg_name(mem.init_new_var(res_varname))
-        print(f"{command1} {res}, {lo}, {iter_var}")
-        print(f"beqz {res}, {endfor_label}")
-        print(f"{command2} {res}, {iter_var}, {up}")
-        print(f"beqz {res}, {endfor_label}")
+        printc(f"{command1} {res}, {lo}, {iter_var}")
+        printc(f"beqz {res}, {endfor_label}")
+        printc(f"{command2} {res}, {iter_var}, {up}")
+        printc(f"beqz {res}, {endfor_label}")
 
         self.internal_block.compile(mem)
 
         # modify var
         if self.up_down == "+":
-            print(f"addi {iter_var}, {iter_var}, 1")
+            printc(f"addi {iter_var}, {iter_var}, 1")
         else:
-            print(f"subi {iter_var}, {iter_var}, 1")
+            printc(f"subi {iter_var}, {iter_var}, 1")
 
-        print(f"j {for_label}")
+        printc(f"j {for_label}")
 
-        print(f"{endfor_label}:")
+        printc(f"{endfor_label}:")
 
         mem.delete_var(lo_varname)
         mem.delete_var(up_varname)
@@ -579,7 +630,7 @@ class Lexer():
                 at_least_one = False
                 for index, regex in enumerate(regexes):
                     if re.search(regex, substr):
-                        # print(f"{index}, {regex}")
+                        # printc(f"{index}, {regex}")
                         at_least_one = True
                         last_success_idx = a
                         last_success_token = index
@@ -763,9 +814,15 @@ class Parser():
 
 
 def execute(tree_root):
-    symbol_table = {}
+    mem = MemoryTree()
+    ar_main = ActivationRecord(mem, None)
 
-    tree_root.exec(symbol_table)
+    tree_root.exec(ar_main)
+
+def compile(ast):
+    mem = MemoryManager()
+    ast.compile(mem)
+    pyperclip.copy(full_str)
 
 if __name__ == "__main__":
 
@@ -780,8 +837,6 @@ if __name__ == "__main__":
 
     ast = parser.create_ast()
 
-    symbol_table = {}
-    mem = MemoryManager()
 
-    #ast.exec(symbol_table)
-    ast.compile(mem)
+    execute(ast)
+    #compile(ast)
