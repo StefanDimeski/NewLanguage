@@ -1,6 +1,7 @@
 import re
 import sys
 from enum import Enum
+import random
 
 regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$",
            "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
@@ -32,17 +33,113 @@ class TType(AutoNumber):
     SEMICOLON = ()
     TILDE = ()
 
+class REG_STAT(Enum):
+    OCCUPIED = 0
+    DIRTY = 1
+    FREE = 2
+
+class Var():
+    def __init__(self, ident, reg=None):
+        self.reg = reg
+        self.stack = None
+        self.ident = ident
+        self.temp = True
+
 class MemoryManager():
     def __init__(self):
-        # Both of these dictionaries are indexed by symbol
-        self.register_table = {}
-        self.stack_table = {}  # offset from $fp
-        self.registers = [f"$t{i}" for i in range(0, 8)]
-        self.register_occupied = [False for i in range(0, 8)]
-        self.free_offset = 0
-        self.label_generator = self.label_generator()
+        self.register_names = [f"$t{i}" for i in range(0, 8)]
+        self.free_stack_offset = 0
+        self.varname_gen = self.varname_generator()
+        self.label_gen = self.label_generator()
 
-        print("move $fp, $sp")
+        self.vars = {}
+        self.registers_status = [REG_STAT.FREE for reg in self.register_names]
+        self.register_varname = [None for reg in self.register_names]
+
+    def init_new_var(self, ident, temp=True):
+        reg_idx = self.get_free_register()
+        self.vars[ident] = Var(ident, reg_idx)
+        self.register_varname[reg_idx] = ident
+        self.registers_status[reg_idx] = REG_STAT.OCCUPIED
+        self.vars[ident].temp = temp
+
+        return reg_idx
+
+    def delete_var(self, ident):
+        self.registers_status[self.vars[ident].reg] = REG_STAT.FREE
+        self.register_varname[self.vars[ident].reg] = None
+
+        del self.vars[ident]
+
+    def change_varname(self, old_varname, new_varname, make_non_temp=False):
+        reg = self.vars[old_varname]
+        stack = self.vars[old_varname]
+        del self.vars[old_varname]
+
+        self.register_varname[reg] = new_varname
+        self.vars[new_varname] = Var(new_varname, reg)
+        self.vars[new_varname].stack = stack
+
+        if make_non_temp:
+            self.vars[new_varname].temp = False
+
+    def get_var_in_any_reg(self, varname):
+        if varname not in self.vars:
+            print(f"ERROR: Variable {varname} currently not accounted for!")
+            exit()
+
+        if self.vars[varname].reg is not None:
+            return self.vars[varname].reg
+
+        free_reg_idx = self.get_free_register()
+        self.registers_status[free_reg_idx] = REG_STAT.OCCUPIED
+        self.vars[varname].reg = free_reg_idx
+        self.register_varname[free_reg_idx] = varname
+
+        print(f"lw {self.reg_name(free_reg_idx)}, {self.vars[varname].stack}($fp)")
+
+        return free_reg_idx
+
+
+    def get_free_register(self):
+        for idx, reg_stat in enumerate(self.registers_status):
+            if reg_stat == REG_STAT.FREE:
+                return idx
+
+        # No empty registers, we have to convict one
+        rand_idx = random.randrange(0, len(self.register_names))
+        curr_var = self.register_varname[rand_idx]
+
+        self.store_var_on_stack(curr_var)
+        self.vars[curr_var].reg = None
+        self.register_varname[rand_idx] = None
+
+        return rand_idx
+
+    def is_var_temp(self, ident):
+        return self.vars[ident].temp
+
+    def store_var_on_stack(self, varname):
+        if self.vars[varname].stack is None:
+            offset = self.move_stack_up()
+            reg_idx = self.vars[varname].reg
+            self.vars[varname].stack = offset
+
+        print(f"sw {self.register_names[self.vars[varname].reg]}, {self.vars[varname].stack}($fp)")
+
+    def move_stack_up(self):
+        print(f"subi $sp, $sp, 4")
+        self.free_stack_offset -= 4
+        return self.free_stack_offset
+
+    def reg_name(self, reg_idx):
+        return self.register_names[reg_idx]
+
+    def get_rand_varname(self):
+        return next(self.varname_gen)
+
+    def new_label(self):
+        return next(self.label_gen)
 
     def label_generator(self):
         num = 0
@@ -56,74 +153,17 @@ class MemoryManager():
             num += 1
             yield label
 
-    def new_label(self):
-        return next(self.label_generator)
+    def varname_generator(self):
+        num = 0
+        while True:
+            num_str = str(num)
+            label = "__"
 
-    def load_symbol_in_register(self, symbol_ident, register):
-        if symbol_ident in self.register_table:
-            return self.register_table[symbol_ident]
+            for digit in num_str:
+                label += chr(97 + int(digit))
 
-        if symbol_ident in self.stack_table:
-            print(f"lw {register}, {self.stack_table[symbol_ident]}($fp)")
-            return register
-
-        self.occupy_reg(register)
-
-        return None
-
-    def load_symbol_in_free_register(self, symbol_ident):
-        if symbol_ident in self.register_table:
-            return self.register_table[symbol_ident]
-
-        free_reg = self.get_free_register()
-        if symbol_ident in self.stack_table:
-            print(f"lw {free_reg}, {self.stack_table[symbol_ident]}($fp)")
-            return free_reg
-
-        return None
-
-    def stack_up(self):
-        print(f"addi $sp, $sp, -4")
-
-    def store_ident_in_memory(self, id):
-        self.stack_up()
-
-        reg = self.register_table[id]
-
-        print(f"sw {reg}, {self.free_offset}($fp)")
-        self.stack_table[id] = self.free_offset
-
-        self.free_offset -= 4
-
-    def store_reg_in_memory_as(self, reg, as_id):
-        self.register_table[as_id] = reg
-
-        self.store_ident_in_memory(as_id)
-
-    def get_free_register(self, occupy=True):
-        for idx, r in enumerate(self.register_occupied):
-            if not r:
-                if occupy:
-                    self.occupy_reg(self.registers[idx])
-                return self.registers[idx]
-
-        # At this point no register was free so we need to evict one TODO
-        print("ERROR: No more free registers")
-
-    def occupy_reg(self, reg):
-        idx = self.registers.index(reg)
-        self.register_occupied[idx] = True
-
-    def free_register(self, reg):
-        idx = self.registers.index(reg)
-        self.register_occupied[idx] = False
-
-    def free_register_if_not_id(self, reg):
-        if reg in list(self.register_table.values()):
-            return
-
-        idx = self.registers.index(reg)
-        self.register_occupied[idx] = False
+            num += 1
+            yield label
 
 class Node:
     def __init__(self):
@@ -148,13 +188,9 @@ class Assignment(Node):
 
     def compile(self, mem):
         ident = self.var.identifier
-        reg = self.expr.compile(mem)
-        mem.register_table[ident] = reg
-        if ident in mem.stack_table:
-            print(f"sw {reg}, {mem.stack_table[ident]}($fp)")
-        else:
-            mem.store_ident_in_memory(ident)
+        res_name = self.expr.compile(mem)
 
+        mem.change_varname(res_name, ident)
         return None
 
 class If_Statement(Node):
@@ -178,12 +214,14 @@ class If_Statement(Node):
         return None
 
     def compile(self, mem):
-        result_reg = self.condition.compile(mem)
+        result_varname = self.condition.compile(mem)
+        result_reg = mem.reg_name(mem.get_var_in_any_reg(result_varname))
 
         else_label = mem.new_label()
         print(f"beqz {result_reg}, {else_label}")
 
-        mem.free_register(result_reg)
+        if mem.is_var_temp(result_varname):
+            mem.delete_var(result_varname)
 
         self.block.compile(mem)
 
@@ -231,11 +269,15 @@ class Operator(Node):
             return False
 
     def compile(self, mem):
-        free_reg = mem.get_free_register()
+        res_varname = mem.get_rand_varname()
+        free_reg = mem.reg_name(mem.init_new_var(res_varname))
 
-        left = self.left.compile(mem)
-        right = self.right.compile(mem)
+        left_varname = self.left.compile(mem)
+        right_varname = self.right.compile(mem)
         type = self.op
+
+        left = mem.reg_name(mem.get_var_in_any_reg(left_varname))
+        right = mem.reg_name(mem.get_var_in_any_reg(right_varname))
 
         if type == "+":
             print(f"add {free_reg}, {left}, {right}")
@@ -263,12 +305,15 @@ class Operator(Node):
         else:
             print(f"ERROR: Invalid operator {type}")
 
-        mem.free_register_if_not_id(left)
-        mem.free_register_if_not_id(right)
+        if not mem.is_var_temp(left_varname):
+            mem.delete_var(left_varname)
 
-        return free_reg
+        if not mem.is_var_temp(right_varname):
+            mem.delete_var(right_varname)
 
-class Var(Node):
+        return res_varname
+
+class Variable(Node):
     def __init__(self, ident):
         super().__init__()
         self.identifier = ident
@@ -277,7 +322,9 @@ class Var(Node):
         return symbol_table[self.identifier]
 
     def compile(self, mem):
-        return mem.load_symbol_in_free_register(self.identifier)
+        #mem.get_var_in_any_reg(self.identifier) #TODO should it just return self.identifier?
+        return self.identifier
+
 
 class Number(Node):
     def __init__(self, num):
@@ -288,9 +335,10 @@ class Number(Node):
         return self.num
 
     def compile(self, mem):
-        reg = mem.get_free_register()
+        varname = mem.get_rand_varname()
+        reg = mem.reg_name(mem.init_new_var(varname))
         print(f"li {reg}, {self.num}")
-        return reg
+        return varname
 
 class Print(Node):
     def __init__(self, expr):
@@ -309,7 +357,8 @@ class Print(Node):
         return None
 
     def compile(self, mem):
-        reg = self.expr.compile(mem)
+        res_varname = self.expr.compile(mem)
+        reg = mem.reg_name(mem.get_var_in_any_reg(res_varname))
 
         print(f"li $v0, 1")
         print(f"move $a0, {reg}")
@@ -362,11 +411,12 @@ class Input(Node):
         print("li $v0, 5")
         print("syscall")
 
-        free_reg = mem.get_free_register()
+        varname = mem.get_rand_varname()
+        free_reg = mem.reg_name(mem.init_new_var(varname))
 
         print(f"move {free_reg}, $v0")
 
-        return free_reg
+        return varname
 
 class For_Stat(Node):
     def __init__(self, lower, upper, internal_block, var_name, up_down, first_bound, second_bound):
@@ -415,8 +465,11 @@ class For_Stat(Node):
         command1 = "slt" if self.first_bound == "<" else "sle"
         command2 = "slt" if self.second_bound == "<" else "sle"
 
-        lo = self.lower.compile(mem)
-        up = self.upper.compile(mem)
+        lo_varname = self.lower.compile(mem)
+        up_varname = self.upper.compile(mem)
+
+        lo = mem.reg_name(mem.get_var_in_any_reg(lo_varname))
+        up = mem.reg_name(mem.get_var_in_any_reg(up_varname))
 
         # mem.store_reg_in_memory_as(lo, "FOR.lo")
         # mem.store_reg_in_memory_as(up, "FOR.up")
@@ -424,7 +477,7 @@ class For_Stat(Node):
         # mem.free_register(lo)
         # mem.free_register(hi)
 
-        iter_var = mem.get_free_register()
+        iter_var = mem.reg_name(mem.init_new_var(self.var_name))
         if self.up_down == "+":
             if self.first_bound == "<":
                 print(f"addi {iter_var}, {lo}, 1")
@@ -435,12 +488,11 @@ class For_Stat(Node):
                 print(f"subi {iter_var}, {up}, 1")
             else:
                 print(f"move {iter_var}, {up}")
-        #mem.store_reg_in_memory_as(iter_var, self.var_name)
-        mem.register_table[self.var_name] = iter_var
 
         print(f"{for_label}:")
 
-        res = mem.get_free_register()
+        res_varname = mem.get_rand_varname()
+        res = mem.reg_name(mem.init_new_var(res_varname))
         print(f"{command1} {res}, {lo}, {iter_var}")
         print(f"beqz {res}, {endfor_label}")
         print(f"{command2} {res}, {iter_var}, {up}")
@@ -458,10 +510,10 @@ class For_Stat(Node):
 
         print(f"{endfor_label}:")
 
-        mem.free_register(lo)
-        mem.free_register(up)
-        mem.free_register(iter_var)
-        mem.free_register(res)
+        mem.delete_var(lo_varname)
+        mem.delete_var(up_varname)
+        mem.delete_var(self.var_name)
+        mem.delete_var(res_varname)
 
 class Token():
     def __init__(self, type, val):
@@ -639,7 +691,7 @@ class Parser():
 
         expr = self.parse_expr()
 
-        return Assignment(Var(ident), expr)
+        return Assignment(Variable(ident), expr)
 
     def parse_expr(self):
         node = self.parse_expr1()
@@ -695,7 +747,7 @@ class Parser():
             self.lex.eat(TType.CLOSED_BRACE)
         if nxt.type == TType.IDENT:
             ident_tok = self.lex.eat(TType.IDENT)
-            node = Var(ident_tok.val)
+            node = Variable(ident_tok.val)
         elif nxt.type == TType.NUMBER:
             num = self.lex.eat(TType.NUMBER).val
             node = Number(num)
@@ -731,5 +783,5 @@ if __name__ == "__main__":
     symbol_table = {}
     mem = MemoryManager()
 
-    ast.exec(symbol_table)
-    #ast.compile(mem)
+    #ast.exec(symbol_table)
+    ast.compile(mem)
