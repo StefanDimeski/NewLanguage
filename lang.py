@@ -72,8 +72,8 @@ class MemoryManager():
         del self.vars[ident]
 
     def change_varname(self, old_varname, new_varname, make_non_temp=False):
-        reg = self.vars[old_varname]
-        stack = self.vars[old_varname]
+        reg = self.vars[old_varname].reg
+        stack = self.vars[old_varname].stack
         del self.vars[old_varname]
 
         self.register_varname[reg] = new_varname
