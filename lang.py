@@ -19,7 +19,7 @@ def printc(str):
 
 
 
-regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$",
+regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^function$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$",
            "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
 
 class TType(AutoNumber):
@@ -29,6 +29,7 @@ class TType(AutoNumber):
     PRINT = ()
     ELSE = ()
     FOR = ()
+    FUNCTION = ()
     EQUAL = ()
     BIN_OP_PLUS_MIN = ()
     BIN_OP_MULT_DIV = ()
@@ -416,8 +417,9 @@ class Print(Node):
         printc("syscall")
 
 class Program(Node):
-    def __init__(self, block):
+    def __init__(self, funcs, block):
         super().__init__()
+        self.funcs = funcs
         self.block = block
 
     def exec(self, ar):
@@ -429,6 +431,19 @@ class Program(Node):
         # end program
         printc("li $v0, 10")
         printc("syscall")
+
+class Function(Node):
+    def __init__(self, name, params, body):
+        super().__init__()
+        self.name = name
+        self.params = params
+        self.body = body
+
+    def exec(self, ar):
+        pass
+
+    def compile(self, mem):
+        pass
 
 class Block(Node):
     def __init__(self, children):
@@ -566,6 +581,17 @@ class For_Stat(Node):
         mem.delete_var(self.var_name)
         mem.delete_var(res_varname)
 
+class Function_Call(Node):
+    def __init__(self, name, args):
+        super().__init__()
+        self.name = name
+        self.args = args
+
+    def exec(self, ar):
+        pass
+    def compile(self, mem):
+        pass
+
 class Token():
     def __init__(self, type, val):
         self.type = type
@@ -579,13 +605,12 @@ class Lexer():
     def __init__(self, text):
         self.text = text
         self.generator = self.gen_tokens()
-        self.next_token = None
+        self.next_token = []
 
     def eat(self, token_type):
         nxt = None
-        if self.next_token != None:
-            nxt = self.next_token
-            self.next_token = None
+        if len(self.next_token) > 0:
+            nxt = self.next_token.pop(0)
         else:
             nxt = next(self.generator)
 
@@ -597,9 +622,8 @@ class Lexer():
 
     def eat_list(self, list_of_types):
         nxt = None
-        if self.next_token != None:
-            nxt = self.next_token
-            self.next_token = None
+        if len(self.next_token) > 0:
+            nxt = self.next_token.pop(0)
         else:
             nxt = next(self.generator)
 
@@ -609,12 +633,15 @@ class Lexer():
 
         return nxt
 
-    def peek(self):
-        if self.next_token != None:
-            return self.next_token
+    def peek(self, num=1):
+        if len(self.next_token) >= num:
+            return self.next_token[num - 1]
 
-        self.next_token = next(self.generator)
-        return self.next_token
+        num_peeks = num - len(self.next_token)
+        for i in range(0, num_peeks):
+            self.next_token.append(next(self.generator))
+
+        return self.next_token[-1]
 
     def gen_tokens(self):
         inp = self.text
@@ -654,7 +681,48 @@ class Parser():
         return self.parse_program()
 
     def parse_program(self):
-        return Program(self.parse_block())
+        funcs = []
+        while self.lex.peek().type == TType.FUNCTION:
+            funcs.append(self.parse_function_declaration())
+
+        return Program(funcs, self.parse_block())
+
+    def parse_function_declaration(self):
+        self.lex.eat(TType.FUNCTION)
+
+        ident = self.lex.eat(TType.IDENT).val
+        self.lex.eat(TType.OPEN_BRACE)
+
+        params = []
+        if self.lex.peek().type != TType.CLOSED_BRACE:
+            params.append(Variable(self.lex.eat(TType.IDENT).val))
+
+        while self.lex.peek().type != TType.CLOSED_BRACE:
+            self.lex.eat(TType.SEMICOLON)
+            params.append(Variable(self.lex.eat(TType.IDENT).val))
+
+        self.lex.eat(TType.CLOSED_BRACE)
+
+        body = self.parse_block()
+
+        return Function(ident, params, body)
+
+    def parse_function_call(self):
+        name = self.lex.eat(TType.IDENT).val
+        self.lex.eat(TType.OPEN_BRACE)
+
+        args = []
+        if self.lex.peek().type != TType.CLOSED_BRACE:
+            args.append(Variable(self.lex.eat(TType.IDENT).val))
+
+        while self.lex.peek().type != TType.CLOSED_BRACE:
+            self.lex.eat(TType.SEMICOLON)
+            args.append(Variable(self.lex.eat(TType.IDENT).val))
+
+        self.lex.eat(TType.CLOSED_BRACE)
+
+        return Function_Call(name, args)
+
 
     def parse_block(self):
         self.lex.eat(TType.OPEN_CURLY)
@@ -683,8 +751,14 @@ class Parser():
             return self.parse_input()
         elif nxt.type == TType.FOR:
             return self.parse_for_statement()
+        elif nxt.type == TType.IDENT:
+            if self.lex.peek(2).type == TType.OPEN_BRACE:
+                return self.parse_function_call()
+            else:
+                return self.parse_assignment()
         else:
-            return self.parse_assignment()
+            print(f"ERROR: Unexpected token {nxt.val}")
+            exit()
 
     def parse_if_statement(self):
         self.lex.eat(TType.IF)
