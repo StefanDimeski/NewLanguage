@@ -450,14 +450,17 @@ class Block(Node):
         super().__init__()
         self.children = children
 
-    def exec(self, ar):
-        new_mem = MemoryTree(ar.memory)
-        ar.memory = new_mem
+    def exec(self, ar, func_call=False):
+        if not func_call:
+            new_mem = MemoryTree(ar.memory)
+            ar.memory = new_mem
+
         for child in self.children:
             child.exec(ar)
 
         # Return it back (i.e. discard variables that were created in the scope of the block that just ended)
-        ar.memory = ar.memory.parent_memory
+        if not func_call:
+            ar.memory = ar.memory.parent_memory
 
         return None
 
@@ -582,13 +585,28 @@ class For_Stat(Node):
         mem.delete_var(res_varname)
 
 class Function_Call(Node):
-    def __init__(self, name, args):
+    def __init__(self, name, args, func_node):
         super().__init__()
         self.name = name
         self.args = args
+        self.func_node = func_node
 
     def exec(self, ar):
-        pass
+        if len(self.args) != len(self.func_node.params):
+            print(f"FATAL ERROR: '{self.name}' requires {len(self.func_node.params)} parameters, but was given {len(self.args)}")
+            exit()
+
+        new_mem = MemoryTree()
+
+        for arg_given, arg_taken in zip(self.args, self.func_node.params):
+            new_mem.mem[arg_taken.identifier] = arg_given.exec(ar)
+
+        new_ar = ActivationRecord(new_mem, ar)
+        self.func_node.body.exec(new_ar, True)
+
+        del new_mem
+        del new_ar
+
     def compile(self, mem):
         pass
 
@@ -676,6 +694,7 @@ class Lexer():
 class Parser():
     def __init__(self, lexer):
         self.lex = lexer
+        self.func_name_to_ast_node = {}
 
     def create_ast(self):
         return self.parse_program()
@@ -705,7 +724,10 @@ class Parser():
 
         body = self.parse_block()
 
-        return Function(ident, params, body)
+        node = Function(ident, params, body)
+        self.func_name_to_ast_node[ident] = node
+
+        return node
 
     def parse_function_call(self):
         name = self.lex.eat(TType.IDENT).val
@@ -713,15 +735,15 @@ class Parser():
 
         args = []
         if self.lex.peek().type != TType.CLOSED_BRACE:
-            args.append(Variable(self.lex.eat(TType.IDENT).val))
+            args.append(self.parse_expr1())
 
         while self.lex.peek().type != TType.CLOSED_BRACE:
             self.lex.eat(TType.SEMICOLON)
-            args.append(Variable(self.lex.eat(TType.IDENT).val))
+            args.append(self.parse_expr1())
 
         self.lex.eat(TType.CLOSED_BRACE)
 
-        return Function_Call(name, args)
+        return Function_Call(name, args, self.func_name_to_ast_node[name])
 
 
     def parse_block(self):
