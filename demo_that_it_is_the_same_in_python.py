@@ -1,5 +1,5 @@
 b = 10
-for a in range(0, 11):
+if b - 5 == 5:
     print(b)
     b = 30
 

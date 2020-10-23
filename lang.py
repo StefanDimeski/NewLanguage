@@ -19,8 +19,13 @@ def printc(str):
 
 
 
-regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^function$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$",
-           "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$"]
+regexes = ["^[a-zA-Z][0-9a-zA-Z]*$", "^[0-9][0-9]*$", "^if$", "^print$", "^else$", "^for$", "^while$", "^function$", "^continue$", "^break$",
+           "^return$", "^=$", "^(\+|-)$", "^(\*|/|%)$", "^(==|!=)$", "^(<|>|<=|>=)$", "^\($", "^\)$", "^\{$", "^\}$", "^;$", "^~$", "^\*\*\*$"]
+
+class Flag(Enum):
+    CONTINUE = 0
+    BREAK = 1
+    RETURN = 2
 
 class TType(AutoNumber):
     IDENT = ()
@@ -29,7 +34,11 @@ class TType(AutoNumber):
     PRINT = ()
     ELSE = ()
     FOR = ()
+    WHILE = ()
     FUNCTION = ()
+    CONTINUE = ()
+    BREAK = ()
+    RETURN = ()
     EQUAL = ()
     BIN_OP_PLUS_MIN = ()
     BIN_OP_MULT_DIV = ()
@@ -41,6 +50,7 @@ class TType(AutoNumber):
     CLOSED_CURLY = ()
     SEMICOLON = ()
     TILDE = ()
+    THREE_STARS = ()
 
 class REG_STAT(Enum):
     OCCUPIED = 0
@@ -52,20 +62,128 @@ class Var():
         self.reg = reg
         self.stack = None
         self.ident = ident
-        self.temp = True
+        self.temp = False
+        self.dirty = False
+
+def label_generator():
+    num = 0
+    while True:
+        num_str = str(num)
+        label = ""
+
+        for digit in num_str:
+            label += chr(97 + int(digit))
+
+        num += 1
+        yield label
+
+def varname_generator():
+    num = 0
+    while True:
+        num_str = str(num)
+        label = "__"
+
+        for digit in num_str:
+            label += chr(97 + int(digit))
+
+        num += 1
+        yield label
+
+class AR():
+    def __init__(self, parent=None):
+        self.mem = None
+        self.parent = parent
+
+        self.saved_vars = []
+
+    def save_vars_on_stack(self):
+        for var in self.mem.vars.values():
+            # In saved vars we put all the vars that we need to restore to registers after the call
+            # therefore only if the variable is in a register do we append it to the list for restoration
+            if var.reg is not None:
+                self.saved_vars.append(var)
+
+                if var.stack is None or var.dirty:
+                    self.mem.store_var_on_stack(var.ident)
+
+
+    def invalidate_all_vars(self):
+        # Invalidate it so that next time it's used it has to be picked up from the stack
+        for var in self.mem.vars.values():
+            if var.reg is not None:
+                self.mem.register_varname[var.reg] = None
+                self.mem.registers_status[var.reg] = REG_STAT.FREE
+                var.reg = None
+
+    def reload_saved_vals(self):
+        for i in range(len(self.mem.registers_status)):
+            self.mem.register_varname[i] = None
+            self.mem.registers_status[i] = REG_STAT.FREE
+
+        for var in self.saved_vars:
+            printc(f"lw {self.mem.reg_name(var.reg)}, {var.stack}($fp)")
+            self.mem.registers_status[var.reg] = REG_STAT.OCCUPIED
+            self.mem.register_varname[var.reg] = var.ident
+
+        self.saved_vars.clear()
+
+    def init(self):
+        printc(f"addi $sp, $sp, -8")
+        printc(f"sw $ra, 4($sp)")
+        printc(f"sw $fp, 0($sp)")
+        printc(f"addi $fp, $sp, 4")
+
+        self.mem = MemoryManager()
+
+    def add_argument(self, name, arg_reg):
+        offset_to_store = self.mem.init_var_on_stack(name)
+        printc(f"sw ${self.mem.reg_name(arg_reg)}, {offset_to_store}($fp)")
+
+    def destroy(self):
+        printc(f"addi $sp, $fp, 4")
+        printc(f"lw $ra, 0($fp)")
+        printc(f"lw $fp, -4($fp)")
+
 
 class MemoryManager():
-    def __init__(self):
-        self.register_names = [f"$t{i}" for i in range(0, 8)]
-        self.free_stack_offset = 0
-        self.varname_gen = self.varname_generator()
-        self.label_gen = self.label_generator()
+    varname_gen = varname_generator()
+    label_gen = label_generator()
+    register_names = [f"$t{i}" for i in range(0, 8)]
+
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.free_stack_offset = -4
 
         self.vars = {}
-        self.registers_status = [REG_STAT.FREE for reg in self.register_names]
-        self.register_varname = [None for reg in self.register_names]
+        self.registers_status = [REG_STAT.FREE for reg in MemoryManager.register_names]
+        self.register_varname = [None for reg in MemoryManager.register_names]
 
-    def init_new_var(self, ident, temp=True):
+    @staticmethod
+    def create_new_mem(parent):
+        new = MemoryManager(parent)
+
+        new.vars = parent.vars.copy()
+        new.registers_status = parent.registers_status
+        new.register_varname = parent.register_varname
+
+        return new
+
+    @staticmethod
+    def go_back_a_memory(mem_to_go_back_from):
+        parent = mem_to_go_back_from.parent
+
+        parent.registers_status = [REG_STAT.FREE for reg in MemoryManager.register_names]
+        parent.register_varname = [None for reg in MemoryManager.register_names]
+
+        for varobj in parent.vars.values():
+            if varobj.reg is not None:
+                parent.registers_status[varobj.reg] = REG_STAT.OCCUPIED
+                parent.register_varname[varobj.reg] = varobj.ident
+
+        return parent
+
+
+    def init_new_var(self, ident, temp=False):
         reg_idx = self.get_free_register()
         self.vars[ident] = Var(ident, reg_idx)
         self.register_varname[reg_idx] = ident
@@ -74,9 +192,18 @@ class MemoryManager():
 
         return reg_idx
 
+    def init_new_var_on_stack(self, ident, temp=False):
+        offset = self.move_stack_up()
+        self.vars[ident] = Var(ident)
+        self.vars[ident].temp = temp
+        self.vars[ident].stack = offset
+
+        return offset
+
     def delete_var(self, ident):
-        self.registers_status[self.vars[ident].reg] = REG_STAT.FREE
-        self.register_varname[self.vars[ident].reg] = None
+        if self.vars[ident].reg is not None:
+            self.registers_status[self.vars[ident].reg] = REG_STAT.FREE
+            self.register_varname[self.vars[ident].reg] = None
 
         del self.vars[ident]
 
@@ -115,8 +242,8 @@ class MemoryManager():
             if reg_stat == REG_STAT.FREE:
                 return idx
 
-        # No empty registers, we have to convict one
-        rand_idx = random.randrange(0, len(self.register_names))
+        # No empty registers, we have to evict one
+        rand_idx = random.randrange(0, len(MemoryManager.register_names))
         curr_var = self.register_varname[rand_idx]
 
         self.store_var_on_stack(curr_var)
@@ -133,47 +260,28 @@ class MemoryManager():
             offset = self.move_stack_up()
             reg_idx = self.vars[varname].reg
             self.vars[varname].stack = offset
+            printc(f"sw {MemoryManager.register_names[reg_idx]}, {self.vars[varname].stack}($fp)")
 
-        printc(f"sw {self.register_names[self.vars[varname].reg]}, {self.vars[varname].stack}($fp)")
+            self.vars[varname].dirty = False
+        elif self.vars[varname].dirty:
+            reg_idx = self.vars[varname].reg
+            printc(f"sw {MemoryManager.register_names[reg_idx]}, {self.vars[varname].stack}($fp)")
+
+            self.vars[varname].dirty = False
 
     def move_stack_up(self):
-        printc(f"subi $sp, $sp, 4")
+        printc(f"addi $sp, $sp, -4")
         self.free_stack_offset -= 4
         return self.free_stack_offset
 
     def reg_name(self, reg_idx):
-        return self.register_names[reg_idx]
+        return MemoryManager.register_names[reg_idx]
 
     def get_rand_varname(self):
-        return next(self.varname_gen)
+        return next(MemoryManager.varname_gen)
 
     def new_label(self):
-        return next(self.label_gen)
-
-    def label_generator(self):
-        num = 0
-        while True:
-            num_str = str(num)
-            label = ""
-
-            for digit in num_str:
-                label += chr(97 + int(digit))
-
-            num += 1
-            yield label
-
-    def varname_generator(self):
-        num = 0
-        while True:
-            num_str = str(num)
-            label = "__"
-
-            for digit in num_str:
-                label += chr(97 + int(digit))
-
-            num += 1
-            yield label
-
+        return next(MemoryManager.label_gen)
 
 class ActivationRecord():
     def __init__(self, memorytree, parent):
@@ -238,11 +346,29 @@ class Assignment(Node):
 
         return None
 
-    def compile(self, mem):
-        ident = self.var.identifier
-        res_name = self.expr.compile(mem)
+    def compile(self, ar):
+        mem = ar.mem
 
-        mem.change_varname(res_name, ident, True)
+        ident = self.var.identifier
+        res_name = self.expr.compile(ar)
+
+        if ident not in mem.vars:
+            # If we're initializing the new var now, we might as well just use change_varname
+            mem.change_varname(res_name, ident, True)
+        else:
+            # But if we have it already, we must put the new value where the old one was
+            if mem.vars[ident].reg is not None:
+                printc(f"move {mem.reg_name(mem.vars[ident].reg)}, {mem.reg_name(mem.get_var_in_any_reg(res_name))}")
+
+                if mem.vars[ident].stack is not None:
+                    # This indicates that the value in the associated register might be different to the value in the associated stack offset
+                    mem.vars[ident].dirty = True
+
+            elif mem.vars[ident].stack is not None:
+                printc(f"sw {mem.reg_name(mem.get_var_in_any_reg(res_name))}, {mem.vars[ident].stack}($fp)")
+            else:
+                print(f"ERROR: Variable '{ident}' exists, but isn't present either in register or in stack!")
+
         return None
 
 class If_Statement(Node):
@@ -258,15 +384,21 @@ class If_Statement(Node):
             return None
 
         if condition:
-            self.block.exec(ar)
+            ret = self.block.exec(ar)
+            if ret is not None:
+                return ret
         else:
             if self.else_block != None:
-                self.else_block.exec(ar)
+                ret = self.else_block.exec(ar)
+                if ret is not None:
+                    return ret
 
         return None
 
-    def compile(self, mem):
-        result_varname = self.condition.compile(mem)
+    def compile(self, ar, end_function_lbl=None):
+        mem = ar.mem
+
+        result_varname = self.condition.compile(ar)
         result_reg = mem.reg_name(mem.get_var_in_any_reg(result_varname))
 
         else_label = mem.new_label()
@@ -275,7 +407,7 @@ class If_Statement(Node):
         if mem.is_var_temp(result_varname):
             mem.delete_var(result_varname)
 
-        self.block.compile(mem)
+        self.block.compile(ar, end_function_lbl=end_function_lbl)
 
         if self.else_block == None:
             printc(f"{else_label}:")
@@ -283,7 +415,7 @@ class If_Statement(Node):
             after_if_label = mem.new_label()
             printc(f"j {after_if_label}")
             printc(f"{else_label}:")
-            self.else_block.compile(mem)
+            self.else_block.compile(ar)
             printc(f"{after_if_label}:")
 
 class Operator(Node):
@@ -320,16 +452,18 @@ class Operator(Node):
             print(f'ERROR: Invalid operator type: "{self.op}"')
             return False
 
-    def compile(self, mem):
-        res_varname = mem.get_rand_varname()
-        free_reg = mem.reg_name(mem.init_new_var(res_varname))
+    def compile(self, ar):
+        mem = ar.mem
 
-        left_varname = self.left.compile(mem)
-        right_varname = self.right.compile(mem)
+        left_varname = self.left.compile(ar)
+        right_varname = self.right.compile(ar)
         type = self.op
 
         left = mem.reg_name(mem.get_var_in_any_reg(left_varname))
         right = mem.reg_name(mem.get_var_in_any_reg(right_varname))
+
+        res_varname = mem.get_rand_varname()
+        free_reg = mem.reg_name(mem.init_new_var(res_varname, temp=True))
 
         if type == "+":
             printc(f"add {free_reg}, {left}, {right}")
@@ -357,10 +491,10 @@ class Operator(Node):
         else:
             print(f"ERROR: Invalid operator {type}")
 
-        if not mem.is_var_temp(left_varname):
+        if mem.is_var_temp(left_varname):
             mem.delete_var(left_varname)
 
-        if not mem.is_var_temp(right_varname):
+        if mem.is_var_temp(right_varname):
             mem.delete_var(right_varname)
 
         return res_varname
@@ -373,8 +507,7 @@ class Variable(Node):
     def exec(self, ar):
         return ar.memory[self.identifier]
 
-    def compile(self, mem):
-        #mem.get_var_in_any_reg(self.identifier) #TODO should it just return self.identifier?
+    def compile(self, ar):
         return self.identifier
 
 
@@ -386,9 +519,11 @@ class Number(Node):
     def exec(self, ar):
         return self.num
 
-    def compile(self, mem):
+    def compile(self, ar):
+        mem = ar.mem
+
         varname = mem.get_rand_varname()
-        reg = mem.reg_name(mem.init_new_var(varname))
+        reg = mem.reg_name(mem.init_new_var(varname, temp=True))
         printc(f"li {reg}, {self.num}")
         return varname
 
@@ -408,13 +543,18 @@ class Print(Node):
 
         return None
 
-    def compile(self, mem):
-        res_varname = self.expr.compile(mem)
+    def compile(self, ar):
+        mem = ar.mem
+
+        res_varname = self.expr.compile(ar)
         reg = mem.reg_name(mem.get_var_in_any_reg(res_varname))
 
         printc(f"li $v0, 1")
         printc(f"move $a0, {reg}")
         printc("syscall")
+
+        if mem.is_var_temp(res_varname):
+            mem.delete_var(res_varname)
 
 class Program(Node):
     def __init__(self, funcs, block):
@@ -423,50 +563,80 @@ class Program(Node):
         self.block = block
 
     def exec(self, ar):
-        self.block.exec(ar)
+        ret = self.block.exec(ar)
 
-    def compile(self, mem):
-        self.block.compile(mem)
+        if ret is not None:
+            first_item = ret.pop(0)
+            if first_item[0] == Flag.RETURN:
+                print(f"ERROR: 'return' outside of function body")
+            elif first_item[0] == Flag.CONTINUE:
+                print(f"ERROR: 'continue' outside of loop")
+            elif first_item[0] == Flag.BREAK:
+                print(f"ERROR: 'break' outside of loop")
+
+    def compile(self):
+        printc(f"j main_program")
+        printc("")
+        printc("")
+        printc("")
+
+        for func in self.funcs:
+            func.compile(None)
+            printc("")
+
+        printc("")
+
+        printc(f"main_program:")
+        ar = AR()
+        ar.init()
+        self.block.compile(ar)
+
+        ar = ar.destroy()
 
         # end program
         printc("li $v0, 10")
         printc("syscall")
-
-class Function(Node):
-    def __init__(self, name, params, body):
-        super().__init__()
-        self.name = name
-        self.params = params
-        self.body = body
-
-    def exec(self, ar):
-        pass
-
-    def compile(self, mem):
-        pass
 
 class Block(Node):
     def __init__(self, children):
         super().__init__()
         self.children = children
 
-    def exec(self, ar, func_call=False):
-        if not func_call:
+    def exec(self, ar, create_new_memory=True):
+        if create_new_memory:
             new_mem = MemoryTree(ar.memory)
             ar.memory = new_mem
 
         for child in self.children:
-            child.exec(ar)
+            ret = child.exec(ar)
+
+            if ret is not None:
+                if create_new_memory:
+                    ar.memory = ar.memory.parent_memory
+                return ret
+
 
         # Return it back (i.e. discard variables that were created in the scope of the block that just ended)
-        if not func_call:
+        if create_new_memory:
             ar.memory = ar.memory.parent_memory
 
         return None
 
-    def compile(self, mem):
+    def compile(self, ar, end_function_lbl=None, create_new_mem=True):
+        mem = ar.mem
+
+        if create_new_mem:
+            mem = MemoryManager.create_new_mem(mem)
+
         for child in self.children:
-            child.compile(mem)
+            if isinstance(child, Return) or isinstance(child, If_Statement) or isinstance(child, While_Stat) or isinstance(child, For_Stat):
+                child.compile(ar, end_function_lbl=end_function_lbl)
+            else:
+                child.compile(ar)
+
+        if create_new_mem:
+            # This will update mem accordingly
+            mem = MemoryManager.go_back_a_memory(mem)
 
 class Input(Node):
     def __init__(self):
@@ -476,12 +646,14 @@ class Input(Node):
     def exec(self, ar):
         return int(input())
 
-    def compile(self, mem):
+    def compile(self, ar):
+        mem = ar.mem
+
         printc("li $v0, 5")
         printc("syscall")
 
         varname = mem.get_rand_varname()
-        free_reg = mem.reg_name(mem.init_new_var(varname))
+        free_reg = mem.reg_name(mem.init_new_var(varname, temp=True))
 
         printc(f"move {free_reg}, $v0")
 
@@ -508,12 +680,30 @@ class For_Stat(Node):
         else:
             start_val = upper_val if self.second_bound == "<=" else upper_val - 1
 
+        new_mem = MemoryTree(ar.memory)
+        ar.memory = new_mem
+
         ar.memory[self.var_name] = start_val
 
         first_check = lower_val < ar.memory[self.var_name] if self.first_bound == "<" else lower_val <= ar.memory[self.var_name]
         second_check = ar.memory[self.var_name] < upper_val if self.second_bound == "<" else ar.memory[self.var_name] <= upper_val
         while first_check and second_check:
-            self.internal_block.exec(ar)
+            ret = self.internal_block.exec(ar, False)
+
+            if ret is not None:
+                first_flag = ret.pop(0)
+                if first_flag[0] == Flag.CONTINUE:
+                    pass
+                elif first_flag[0] == Flag.BREAK:
+                    ar.memory = ar.memory.parent_memory
+
+                    if len(ret) > 0:
+                        return ret
+                    else:
+                        return None
+                else:
+                    ar.memory = ar.memory.parent_memory
+                    return ret
 
             if self.up_down == "+":
                 ar.memory[self.var_name] += 1
@@ -523,30 +713,26 @@ class For_Stat(Node):
             first_check = lower_val < ar.memory[self.var_name] if self.first_bound == "<" else lower_val <= ar.memory[self.var_name]
             second_check = ar.memory[self.var_name] < upper_val if self.second_bound == "<" else ar.memory[self.var_name] <= upper_val
 
-        del ar.memory[self.var_name]
 
+        ar.memory = ar.memory.parent_memory
         return None
 
-    def compile(self, mem):
-        for_label = mem.new_label()
-        endfor_label = mem.new_label()
+    def compile(self, ar, end_function_lbl=None):
+        ar.mem = MemoryManager.create_new_mem(ar.mem)
+
+        for_label = ar.mem.new_label()
+        endfor_label = ar.mem.new_label()
 
         command1 = "slt" if self.first_bound == "<" else "sle"
         command2 = "slt" if self.second_bound == "<" else "sle"
 
-        lo_varname = self.lower.compile(mem)
-        up_varname = self.upper.compile(mem)
+        lo_varname = self.lower.compile(ar)
+        up_varname = self.upper.compile(ar)
 
-        lo = mem.reg_name(mem.get_var_in_any_reg(lo_varname))
-        up = mem.reg_name(mem.get_var_in_any_reg(up_varname))
+        lo = ar.mem.reg_name(ar.mem.get_var_in_any_reg(lo_varname))
+        up = ar.mem.reg_name(ar.mem.get_var_in_any_reg(up_varname))
 
-        # mem.store_reg_in_memory_as(lo, "FOR.lo")
-        # mem.store_reg_in_memory_as(up, "FOR.up")
-        #
-        # mem.free_register(lo)
-        # mem.free_register(hi)
-
-        iter_var = mem.reg_name(mem.init_new_var(self.var_name))
+        iter_var = ar.mem.reg_name(ar.mem.init_new_var(self.var_name))
         if self.up_down == "+":
             if self.first_bound == "<":
                 printc(f"addi {iter_var}, {lo}, 1")
@@ -554,35 +740,110 @@ class For_Stat(Node):
                 printc(f"move {iter_var}, {lo}")
         else:
             if self.second_bound == "<":
-                printc(f"subi {iter_var}, {up}, 1")
+                printc(f"addi {iter_var}, {up}, -1")
             else:
                 printc(f"move {iter_var}, {up}")
 
         printc(f"{for_label}:")
 
-        res_varname = mem.get_rand_varname()
-        res = mem.reg_name(mem.init_new_var(res_varname))
+        res_varname = ar.mem.get_rand_varname()
+        res = ar.mem.reg_name(ar.mem.init_new_var(res_varname))
         printc(f"{command1} {res}, {lo}, {iter_var}")
         printc(f"beqz {res}, {endfor_label}")
         printc(f"{command2} {res}, {iter_var}, {up}")
         printc(f"beqz {res}, {endfor_label}")
 
-        self.internal_block.compile(mem)
+        self.internal_block.compile(ar, create_new_mem=False, end_function_lbl=end_function_lbl)
 
         # modify var
         if self.up_down == "+":
             printc(f"addi {iter_var}, {iter_var}, 1")
         else:
-            printc(f"subi {iter_var}, {iter_var}, 1")
+            printc(f"addi {iter_var}, {iter_var}, -1")
 
         printc(f"j {for_label}")
 
         printc(f"{endfor_label}:")
 
-        mem.delete_var(lo_varname)
-        mem.delete_var(up_varname)
-        mem.delete_var(self.var_name)
-        mem.delete_var(res_varname)
+        ar.mem = MemoryManager.go_back_a_memory(ar.mem)
+        # mem.delete_var(lo_varname)
+        # mem.delete_var(up_varname)
+        # mem.delete_var(self.var_name)
+        # mem.delete_var(res_varname)
+
+class While_Stat(Node):
+    def __init__(self, cond, internal_block):
+        super().__init__()
+        self.cond = cond
+        self.internal_block = internal_block
+
+    def exec(self, ar):
+        while self.cond.exec(ar) == True:
+            ret = self.internal_block.exec(ar)
+
+            if ret is not None:
+                first_item = ret.pop(0)
+
+                if first_item[0] == Flag.BREAK:
+                    if len(ret) > 0:
+                        return ret
+                    else:
+                        return None
+
+        return None
+
+    def compile(self, ar, end_function_lbl):
+        mem = ar.mem
+
+        begin_lbl = mem.new_label()
+        end_lbl = mem.new_label()
+
+        printc(f"{begin_lbl}:")
+        res_varname = self.cond.compile(ar)
+
+        reg = mem.reg_name(mem.get_var_in_any_reg(res_varname))
+
+        printc(f"beqz {reg}, {end_lbl}")
+        self.internal_block.compile(ar, end_function_lbl=end_function_lbl)
+        printc(f"j {begin_lbl}")
+        printc(f"{end_lbl}:")
+
+        if mem.is_var_temp(res_varname):
+            mem.delete_var(res_varname)
+
+
+class Function(Node):
+    def __init__(self, name, params, body):
+        super().__init__()
+        self.name = name
+        self.params = params
+        self.body = body
+        self.func_lbl = None
+
+    def exec(self, ar):
+        pass
+
+    def compile(self, ar):
+        self.func_lbl = next(MemoryManager.label_gen)
+        end_function_lbl = next(MemoryManager.label_gen)
+
+        printc(f"{self.func_lbl}:")
+
+        ar = AR(ar)
+        ar.init()
+
+        for idx, param in enumerate(self.params):
+            ar.mem.vars[param.identifier] = Var(param.identifier)
+            ar.mem.vars[param.identifier].stack = 4 + idx*4
+
+        self.body.compile(ar, end_function_lbl=end_function_lbl)
+
+        printc(f"{end_function_lbl}:")
+
+        ar = ar.destroy()
+
+        printc("jr $ra")
+
 
 class Function_Call(Node):
     def __init__(self, name, args, func_node):
@@ -602,13 +863,119 @@ class Function_Call(Node):
             new_mem.mem[arg_taken.identifier] = arg_given.exec(ar)
 
         new_ar = ActivationRecord(new_mem, ar)
-        self.func_node.body.exec(new_ar, True)
+        ret = self.func_node.body.exec(new_ar, False)
 
         del new_mem
         del new_ar
 
-    def compile(self, mem):
+        if ret is None:
+            return None
+
+        if len(ret) > 1:
+            print(f"ERROR: Invalid sequence of flags inside function call {[a[0] for a in ret]}")
+            exit()
+
+        first_item = ret.pop(0)
+
+        if first_item[0] == Flag.RETURN:
+            return first_item[1]
+        elif first_item[0] == Flag.CONTINUE:
+            print(f"ERROR: 'continue' outside of loop")
+            exit()
+        else:
+            print(f"ERROR: 'break' outside of loop")
+            exit()
+
+    def compile(self, ar):
+        if len(self.args) != len(self.func_node.params):
+            print(f"FATAL ERROR: '{self.name}' requires {len(self.func_node.params)} parameters, but was given {len(self.args)}")
+            exit()
+
+        ar = AR(ar)
+        ar.mem = ar.parent.mem
+
+        #ar.save_vars_on_stack()
+
+        arg_varnames = []
+
+        for idx, arg in enumerate(self.args):
+            arg_varname = arg.compile(ar)
+            arg_varnames.append(arg_varname)
+
+        # Should it be here?
+        ar.save_vars_on_stack()
+
+        printc(f"addi $sp, $sp, {-4*len(self.args)}")
+        for idx, arg in enumerate(self.args):
+            printc(f"sw {ar.mem.reg_name(ar.mem.get_var_in_any_reg(arg_varnames[idx]))}, {4*idx}($sp)")
+
+
+        printc(f"jal {self.func_node.func_lbl}")
+
+        # Invalidate all variables because we don't know what will happen to the registers inside the function
+        #ar.invalidate_all_vars()
+        ar.reload_saved_vals()
+
+        ar = ar.parent
+
+        for arg_varname in arg_varnames:
+            if ar.mem.is_var_temp(arg_varname):
+                ar.mem.delete_var(arg_varname)
+
+        # Remove arguments from the stack
+        printc(f"addi $sp, $sp, {4*len(self.args)}")
+
+        reg_varname = ar.mem.get_rand_varname()
+        reg_idx = ar.mem.init_new_var(reg_varname, temp=True)
+        printc(f"move {ar.mem.reg_name(reg_idx)}, $v0")
+
+        return reg_varname
+
+
+
+class Continue(Node):
+    def __init__(self):
+        super().__init__()
+
+    def exec(self, ar):
+        return [(Flag.CONTINUE,)]
+
+    def compile(self, ar, next_loop_lbl, end_loop_lbl):
         pass
+
+class Break(Node):
+    def __init__(self, lst):
+        super().__init__()
+        self.lst_to_ret = []
+
+        for item in lst:
+            if item.type == TType.BREAK:
+                self.lst_to_ret.append((Flag.BREAK,))
+            elif item.type == TType.CONTINUE:
+                self.lst_to_ret.append((Flag.CONTINUE, ))
+            else:
+                print(f"ERROR: Invalid token in 'break' statement: '{item.val}'")
+
+    def exec(self, ar):
+        return self.lst_to_ret.copy()
+
+    def compile(self, ar, next_loop_lbl, end_loop_lbl):
+        pass
+
+class Return(Node):
+    def __init__(self, to_ret):
+        super().__init__()
+        self.to_return = to_ret
+
+    def exec(self, ar):
+        return [(Flag.RETURN, self.to_return.exec(ar))]
+
+    def compile(self, ar, end_function_lbl):
+        res_varname = self.to_return.compile(ar)
+        res_idx = ar.mem.get_var_in_any_reg(res_varname)
+
+        printc(f"move $v0, {ar.mem.reg_name(res_idx)}")
+        printc(f"j {end_function_lbl}")
 
 class Token():
     def __init__(self, type, val):
@@ -722,10 +1089,13 @@ class Parser():
 
         self.lex.eat(TType.CLOSED_BRACE)
 
-        body = self.parse_block()
-
-        node = Function(ident, params, body)
+        # This is done this way so that recursive calls in body can find where the name points to
+        node = Function(ident, params, None)
         self.func_name_to_ast_node[ident] = node
+
+        body = self.parse_block()
+        node.body = body
+
 
         return node
 
@@ -773,14 +1143,48 @@ class Parser():
             return self.parse_input()
         elif nxt.type == TType.FOR:
             return self.parse_for_statement()
+        elif nxt.type == TType.WHILE:
+            return self.parse_while_statement()
         elif nxt.type == TType.IDENT:
             if self.lex.peek(2).type == TType.OPEN_BRACE:
                 return self.parse_function_call()
             else:
                 return self.parse_assignment()
+        elif nxt.type == TType.BREAK:
+            return self.parse_break()
+        elif nxt.type == TType.CONTINUE:
+            return self.parse_continue()
+        elif nxt.type == TType.RETURN:
+            return self.parse_return()
         else:
             print(f"ERROR: Unexpected token {nxt.val}")
             exit()
+
+    def parse_break(self):
+        lst = []
+        lst.append(self.lex.eat(TType.BREAK))
+
+        while self.lex.peek().type == TType.BREAK:
+            lst.append(self.lex.eat(TType.BREAK))
+
+        if self.lex.peek().type == TType.CONTINUE:
+            lst.append(self.lex.eat(TType.CONTINUE))
+
+        if self.lex.peek().type == TType.BREAK:
+            print(f"ERROR: Invalid 'break' after 'continue'")
+            exit()
+
+        return Break(lst)
+
+    def parse_continue(self):
+        self.lex.eat(TType.CONTINUE)
+        return Continue()
+
+    def parse_return(self):
+        self.lex.eat(TType.RETURN)
+        to_ret = self.parse_expr1()
+
+        return Return(to_ret)
 
     def parse_if_statement(self):
         self.lex.eat(TType.IF)
@@ -831,6 +1235,17 @@ class Parser():
         internal_block = self.parse_block()
 
         return For_Stat(lower, upper, internal_block, var_name.val, up_down.val, a.val, b.val)
+
+    def parse_while_statement(self):
+        self.lex.eat(TType.WHILE)
+        self.lex.eat(TType.OPEN_BRACE)
+        cond = self.parse_expr()
+        self.lex.eat(TType.CLOSED_BRACE)
+
+        internal_block = self.parse_block()
+
+        return While_Stat(cond, internal_block)
+
 
     def parse_assignment(self):
         ident = self.lex.eat(TType.IDENT).val
@@ -893,8 +1308,11 @@ class Parser():
             node = self.parse_expr()
             self.lex.eat(TType.CLOSED_BRACE)
         if nxt.type == TType.IDENT:
-            ident_tok = self.lex.eat(TType.IDENT)
-            node = Variable(ident_tok.val)
+            if self.lex.peek(2).type == TType.OPEN_BRACE:
+                node = self.parse_function_call()
+            else:
+                ident_tok = self.lex.eat(TType.IDENT)
+                node = Variable(ident_tok.val)
         elif nxt.type == TType.NUMBER:
             num = self.lex.eat(TType.NUMBER).val
             node = Number(num)
@@ -916,8 +1334,7 @@ def execute(tree_root):
     tree_root.exec(ar_main)
 
 def compile(ast):
-    mem = MemoryManager()
-    ast.compile(mem)
+    ast.compile()
     pyperclip.copy(full_str)
 
 if __name__ == "__main__":
@@ -928,11 +1345,15 @@ if __name__ == "__main__":
     else:
         inp = input()
 
+        if inp == "script":
+            with open("script.ste", 'r') as file:
+                inp = file.read().replace('\n', '')
+
     lexer = Lexer(inp)
     parser = Parser(lexer)
 
     ast = parser.create_ast()
 
 
-    execute(ast)
-    #compile(ast)
+    #execute(ast)
+    compile(ast)
