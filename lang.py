@@ -64,6 +64,7 @@ class Var():
         self.ident = ident
         self.temp = False
         self.dirty = False
+        self.evictible = True
 
 def label_generator():
     num = 0
@@ -148,7 +149,7 @@ class AR():
 class MemoryManager():
     varname_gen = varname_generator()
     label_gen = label_generator()
-    register_names = [f"$t{i}" for i in range(0, 8)]
+    register_names = [f"$t{i}" for i in range(0, 10)] + [f"$s{i}" for i in range(0, 8)]
 
     def __init__(self, parent=None):
         self.parent = parent
@@ -183,12 +184,13 @@ class MemoryManager():
         return parent
 
 
-    def init_new_var(self, ident, temp=False):
+    def init_new_var(self, ident, temp=False, evictible=True):
         reg_idx = self.get_free_register()
         self.vars[ident] = Var(ident, reg_idx)
         self.register_varname[reg_idx] = ident
         self.registers_status[reg_idx] = REG_STAT.OCCUPIED
         self.vars[ident].temp = temp
+        self.vars[ident].evictible = evictible
 
         return reg_idx
 
@@ -219,6 +221,9 @@ class MemoryManager():
         if make_non_temp:
             self.vars[new_varname].temp = False
 
+    def make_non_evictible(self, varname):
+        self.vars[varname].evictible = False
+
     def get_var_in_any_reg(self, varname):
         if varname not in self.vars:
             print(f"ERROR: Variable {varname} currently not accounted for!")
@@ -244,6 +249,9 @@ class MemoryManager():
 
         # No empty registers, we have to evict one
         rand_idx = random.randrange(0, len(MemoryManager.register_names))
+        while not self.vars[self.register_varname[rand_idx]].evictible:
+            rand_idx = random.randrange(0, len(MemoryManager.register_names))
+
         curr_var = self.register_varname[rand_idx]
 
         self.store_var_on_stack(curr_var)
@@ -395,7 +403,12 @@ class If_Statement(Node):
 
         return None
 
-    def compile(self, ar, end_function_lbl=None):
+    def compile(self, ar, end_function_lbl=None, loop_continue_lbls=None, loop_break_lbls=None):
+        if loop_break_lbls is None:
+            loop_break_lbls = []
+        if loop_continue_lbls is None:
+            loop_continue_lbls = []
+
         mem = ar.mem
 
         result_varname = self.condition.compile(ar)
@@ -407,7 +420,7 @@ class If_Statement(Node):
         if mem.is_var_temp(result_varname):
             mem.delete_var(result_varname)
 
-        self.block.compile(ar, end_function_lbl=end_function_lbl)
+        self.block.compile(ar, end_function_lbl=end_function_lbl, loop_continue_lbls=loop_continue_lbls, loop_break_lbls=loop_break_lbls)
 
         if self.else_block == None:
             printc(f"{else_label}:")
@@ -415,7 +428,7 @@ class If_Statement(Node):
             after_if_label = mem.new_label()
             printc(f"j {after_if_label}")
             printc(f"{else_label}:")
-            self.else_block.compile(ar)
+            self.else_block.compile(ar, end_function_lbl=end_function_lbl, loop_continue_lbls=loop_continue_lbls, loop_break_lbls=loop_break_lbls)
             printc(f"{after_if_label}:")
 
 class Operator(Node):
@@ -622,15 +635,24 @@ class Block(Node):
 
         return None
 
-    def compile(self, ar, end_function_lbl=None, create_new_mem=True):
+    def compile(self, ar, end_function_lbl=None, create_new_mem=True, loop_continue_lbls=None, loop_break_lbls=None):
+        if loop_break_lbls is None:
+            loop_break_lbls = []
+        if loop_continue_lbls is None:
+            loop_continue_lbls = []
+
         mem = ar.mem
 
         if create_new_mem:
             mem = MemoryManager.create_new_mem(mem)
 
         for child in self.children:
-            if isinstance(child, Return) or isinstance(child, If_Statement) or isinstance(child, While_Stat) or isinstance(child, For_Stat):
+            if isinstance(child, Return):
                 child.compile(ar, end_function_lbl=end_function_lbl)
+            elif isinstance(child, If_Statement) or isinstance(child, While_Stat) or isinstance(child, For_Stat):
+                child.compile(ar, end_function_lbl=end_function_lbl, loop_continue_lbls=loop_continue_lbls, loop_break_lbls=loop_break_lbls)
+            elif isinstance(child, Break) or isinstance(child, Continue):
+                child.compile(ar, loop_continue_lbls=loop_continue_lbls, loop_break_lbls=loop_break_lbls)
             else:
                 child.compile(ar)
 
@@ -717,11 +739,21 @@ class For_Stat(Node):
         ar.memory = ar.memory.parent_memory
         return None
 
-    def compile(self, ar, end_function_lbl=None):
+    def compile(self, ar, end_function_lbl=None, loop_continue_lbls=None, loop_break_lbls=None):
+        if loop_break_lbls is None:
+            loop_break_lbls = []
+        if loop_continue_lbls is None:
+            loop_continue_lbls = []
+
+
         ar.mem = MemoryManager.create_new_mem(ar.mem)
 
         for_label = ar.mem.new_label()
         endfor_label = ar.mem.new_label()
+        continue_label = ar.mem.new_label()
+
+        loop_continue_lbls.append(continue_label)
+        loop_break_lbls.append(endfor_label)
 
         command1 = "slt" if self.first_bound == "<" else "sle"
         command2 = "slt" if self.second_bound == "<" else "sle"
@@ -729,10 +761,13 @@ class For_Stat(Node):
         lo_varname = self.lower.compile(ar)
         up_varname = self.upper.compile(ar)
 
+        ar.mem.make_non_evictible(lo_varname)
+        ar.mem.make_non_evictible(up_varname)
+
         lo = ar.mem.reg_name(ar.mem.get_var_in_any_reg(lo_varname))
         up = ar.mem.reg_name(ar.mem.get_var_in_any_reg(up_varname))
 
-        iter_var = ar.mem.reg_name(ar.mem.init_new_var(self.var_name))
+        iter_var = ar.mem.reg_name(ar.mem.init_new_var(self.var_name, evictible=False))
         if self.up_down == "+":
             if self.first_bound == "<":
                 printc(f"addi {iter_var}, {lo}, 1")
@@ -747,13 +782,17 @@ class For_Stat(Node):
         printc(f"{for_label}:")
 
         res_varname = ar.mem.get_rand_varname()
-        res = ar.mem.reg_name(ar.mem.init_new_var(res_varname))
+        res = ar.mem.reg_name(ar.mem.init_new_var(res_varname, temp=True))
         printc(f"{command1} {res}, {lo}, {iter_var}")
         printc(f"beqz {res}, {endfor_label}")
         printc(f"{command2} {res}, {iter_var}, {up}")
         printc(f"beqz {res}, {endfor_label}")
 
-        self.internal_block.compile(ar, create_new_mem=False, end_function_lbl=end_function_lbl)
+        ar.mem.delete_var(res_varname)
+
+        self.internal_block.compile(ar, create_new_mem=False, end_function_lbl=end_function_lbl, loop_continue_lbls=loop_continue_lbls, loop_break_lbls=loop_break_lbls)
+
+        printc(f"{continue_label}:")
 
         # modify var
         if self.up_down == "+":
@@ -792,19 +831,29 @@ class While_Stat(Node):
 
         return None
 
-    def compile(self, ar, end_function_lbl):
+    def compile(self, ar, end_function_lbl, loop_continue_lbls=None, loop_break_lbls=None):
+        if loop_break_lbls is None:
+            loop_break_lbls = []
+        if loop_continue_lbls is None:
+            loop_continue_lbls = []
+
+
         mem = ar.mem
 
         begin_lbl = mem.new_label()
         end_lbl = mem.new_label()
 
+        loop_continue_lbls.append(begin_lbl)
+        loop_break_lbls.append(end_lbl)
+
         printc(f"{begin_lbl}:")
         res_varname = self.cond.compile(ar)
+        ar.mem.make_non_evictible(res_varname)
 
         reg = mem.reg_name(mem.get_var_in_any_reg(res_varname))
 
         printc(f"beqz {reg}, {end_lbl}")
-        self.internal_block.compile(ar, end_function_lbl=end_function_lbl)
+        self.internal_block.compile(ar, end_function_lbl=end_function_lbl, loop_continue_lbls=loop_continue_lbls, loop_break_lbls=loop_break_lbls)
         printc(f"j {begin_lbl}")
         printc(f"{end_lbl}:")
 
@@ -902,7 +951,7 @@ class Function_Call(Node):
             arg_varname = arg.compile(ar)
             arg_varnames.append(arg_varname)
 
-        # Should it be here?
+        # Should it be here? Most likely yes!
         ar.save_vars_on_stack()
 
         printc(f"addi $sp, $sp, {-4*len(self.args)}")
@@ -940,27 +989,62 @@ class Continue(Node):
     def exec(self, ar):
         return [(Flag.CONTINUE,)]
 
-    def compile(self, ar, next_loop_lbl, end_loop_lbl):
-        pass
+    def compile(self, ar, loop_continue_lbls=None, loop_break_lbls=None):
+        if loop_break_lbls is None:
+            loop_break_lbls = []
+        if loop_continue_lbls is None:
+            loop_continue_lbls = []
+        assert len(loop_continue_lbls) == len(loop_break_lbls)
+
+        if len(loop_continue_lbls) == 0:
+            print("ERROR: 'continue' outside of loop")
+            exit()
+
+        printc(f"j {loop_continue_lbls[-1]}")
 
 class Break(Node):
     def __init__(self, lst):
         super().__init__()
         self.lst_to_ret = []
+        self.num_breaks = 0
+        self.continue_present = False
 
         for item in lst:
             if item.type == TType.BREAK:
                 self.lst_to_ret.append((Flag.BREAK,))
+                self.num_breaks += 1
             elif item.type == TType.CONTINUE:
                 self.lst_to_ret.append((Flag.CONTINUE, ))
+                self.continue_present = True
             else:
                 print(f"ERROR: Invalid token in 'break' statement: '{item.val}'")
 
     def exec(self, ar):
         return self.lst_to_ret.copy()
 
-    def compile(self, ar, next_loop_lbl, end_loop_lbl):
-        pass
+    def compile(self, ar, loop_continue_lbls=None, loop_break_lbls=None):
+        if loop_break_lbls is None:
+            loop_break_lbls = []
+        if loop_continue_lbls is None:
+            loop_continue_lbls = []
+        assert len(loop_continue_lbls) == len(loop_break_lbls)
+
+        if len(loop_break_lbls) == 0:
+            print("ERROR: 'break' outside of loop")
+
+        if self.continue_present:
+            if self.num_breaks + 1 > len(loop_continue_lbls):
+                print(f"ERROR: Using {self.num_breaks} 'break' statements and one 'continue' when depth of loop nesting is {len(loop_continue_lbls)}")
+                exit()
+
+            printc(f"j {loop_continue_lbls[-self.num_breaks - 1]}")
+        else:
+            if self.num_breaks > len(loop_continue_lbls):
+                print(f"ERROR: Using {self.num_breaks} 'break' statements when depth of loop nesting is {len(loop_continue_lbls)}")
+                exit()
+
+            printc(f"j {loop_break_lbls[-self.num_breaks]}")
+
 
 class Return(Node):
     def __init__(self, to_ret):
@@ -1000,7 +1084,7 @@ class Lexer():
             nxt = next(self.generator)
 
         if nxt.type != token_type:
-            print(f"ERROR: Invalid token {nxt.val}")
+            print(f"ERROR: Invalid token '{nxt.val}', '{token_type}' expected!")
             exit()
 
         return nxt
