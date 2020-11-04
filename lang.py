@@ -682,22 +682,24 @@ class Input(Node):
         return varname
 
 class For_Stat(Node):
-    def __init__(self, lower, upper, internal_block, var_name, up_down, first_bound, second_bound):
+    def __init__(self, lower, upper, internal_block, var_name, var_expr, start_is_lower, first_bound, second_bound):
         super().__init__()
         self.lower = lower
         self.upper = upper
         self.internal_block = internal_block
         self.var_name = var_name
-        self.up_down = up_down
+        self.var_update = Assignment(Variable(var_name), var_expr)
+        self.start_is_lower = start_is_lower
         self.first_bound = first_bound
         self.second_bound = second_bound
+
 
     def exec(self, ar):
         lower_val = self.lower.exec(ar)
         upper_val = self.upper.exec(ar)
 
         start_val = None
-        if self.up_down == "+":
+        if self.start_is_lower:
             start_val = lower_val if self.first_bound == "<=" else lower_val + 1
         else:
             start_val = upper_val if self.second_bound == "<=" else upper_val - 1
@@ -727,10 +729,9 @@ class For_Stat(Node):
                     ar.memory = ar.memory.parent_memory
                     return ret
 
-            if self.up_down == "+":
-                ar.memory[self.var_name] += 1
-            else:
-                ar.memory[self.var_name] -= 1
+
+            # Update iteration variable
+            self.var_update.exec(ar)
 
             first_check = lower_val < ar.memory[self.var_name] if self.first_bound == "<" else lower_val <= ar.memory[self.var_name]
             second_check = ar.memory[self.var_name] < upper_val if self.second_bound == "<" else ar.memory[self.var_name] <= upper_val
@@ -768,7 +769,7 @@ class For_Stat(Node):
         up = ar.mem.reg_name(ar.mem.get_var_in_any_reg(up_varname))
 
         iter_var = ar.mem.reg_name(ar.mem.init_new_var(self.var_name, evictible=False))
-        if self.up_down == "+":
+        if self.start_is_lower:
             if self.first_bound == "<":
                 printc(f"addi {iter_var}, {lo}, 1")
             else:
@@ -794,11 +795,9 @@ class For_Stat(Node):
 
         printc(f"{continue_label}:")
 
-        # modify var
-        if self.up_down == "+":
-            printc(f"addi {iter_var}, {iter_var}, 1")
-        else:
-            printc(f"addi {iter_var}, {iter_var}, -1")
+        # modify var - var modification now is integrated into self.internal_block
+        self.var_update.compile(ar)
+
 
         printc(f"j {for_label}")
 
@@ -1297,17 +1296,30 @@ class Parser():
 
         return Print(expr)
 
+
     def parse_for_statement(self):
+        start_is_lower = False
+
         self.lex.eat(TType.FOR)
         lower = self.parse_expr1()
+
+        if self.lex.peek().type == TType.IDENT and self.lex.peek().val == 's':
+            self.lex.eat(TType.IDENT)
+            start_is_lower = True
 
         a = self.lex.eat(TType.BIN_OP_GREATER_SMALLER)
         if a.val not in ["<", "<="]:
             print(f"ERROR: Invalid syntax. Unexpected token {a.val}")
             exit()
 
-        var_name = self.lex.eat(TType.IDENT)
-        up_down = self.lex.eat(TType.BIN_OP_PLUS_MIN)
+        # var_name = self.lex.eat(TType.IDENT)
+        # up_down = self.lex.eat(TType.BIN_OP_PLUS_MIN)
+
+        # Im envisioning it to be something like for 0s <= a+50 <= 200 { block }
+        # where s indicates the which of the bounds is the starting value
+
+        var_name = self.lex.peek()
+        var_expr = self.parse_expr1()
 
         b = self.lex.eat(TType.BIN_OP_GREATER_SMALLER)
         if b.val not in ["<", "<="]:
@@ -1316,9 +1328,19 @@ class Parser():
 
         upper = self.parse_expr1()
 
+        if self.lex.peek().type == TType.IDENT and self.lex.peek().val == 's':
+            if start_is_lower:
+                print(f"ERROR: The modifier 's' must be included either on the lower or on the upper bound, but not both")
+                exit()
+
+            self.lex.eat(TType.IDENT)
+        elif not start_is_lower:
+            print(f"ERROR: For loop start bound not set. Please use 's' after one of the bound expressions to indicate that the for loop starts there")
+            exit()
+
         internal_block = self.parse_block()
 
-        return For_Stat(lower, upper, internal_block, var_name.val, up_down.val, a.val, b.val)
+        return For_Stat(lower, upper, internal_block, var_name.val, var_expr, start_is_lower, a.val, b.val)
 
     def parse_while_statement(self):
         self.lex.eat(TType.WHILE)
