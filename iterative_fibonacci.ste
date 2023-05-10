@@ -1,0 +1,23 @@
+function fib(num)
+{
+    a = 1;
+    b = 1;
+
+    while (num - 2 > 0)
+    {
+        next = a + b;
+
+        a = b;
+        b = next;
+
+        num = num - 1
+    };
+
+    return b
+}
+
+{
+    for 1s <= n+1 <= 10 {
+        print(fib(n))
+    }
+}

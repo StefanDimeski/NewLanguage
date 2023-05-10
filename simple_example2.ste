@@ -1,0 +1,14 @@
+function printDoubleNumber(num)
+{
+    print(num * 2)
+}
+
+function returnDoubleNumber(num)
+{
+    return num * 2
+}
+
+{
+    printDoubleNumber(5);
+    print(returnDoubleNumber(7))
+}

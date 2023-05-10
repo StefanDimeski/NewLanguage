@@ -1,0 +1,11 @@
+function fib(d)
+{
+    a = 50;
+    b = 100;
+    c = (a + b + d) / 3;
+    return c
+}
+
+{
+    print(fib(200))
+}
